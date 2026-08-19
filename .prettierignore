@@ -1,0 +1,5 @@
+node_modules/
+coverage/
+uploads/
+cls_database.sqlite
+package-lock.json

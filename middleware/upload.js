@@ -19,7 +19,8 @@ const storage = multer.diskStorage({
     if (file.fieldname.includes('photo')) sub = 'photos';
     else if (file.fieldname.includes('passport')) sub = 'passports';
     else if (file.fieldname.includes('identity')) sub = 'identity';
-    else if (file.fieldname.includes('document') || file.fieldname.includes('file')) sub = 'documents';
+    else if (file.fieldname.includes('document') || file.fieldname.includes('file'))
+      sub = 'documents';
 
     const targetDir = path.join(baseUploadDir, sub);
     cb(null, targetDir);
@@ -45,7 +46,10 @@ const fileFilter = (req, file, cb) => {
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Only JPG, PNG, WEBP, PDF, and DOC/DOCX files are allowed.'), false);
+    cb(
+      new Error('Invalid file type. Only JPG, PNG, WEBP, PDF, and DOC/DOCX files are allowed.'),
+      false
+    );
   }
 };
 

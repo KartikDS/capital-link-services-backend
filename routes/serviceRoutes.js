@@ -21,10 +21,6 @@ router.post(
 );
 
 // Russian Visa Voucher (As per russian-visa-voucher portal)
-router.post(
-  '/russian-visa-voucher',
-  optionalAuthToken,
-  serviceController.submitRussianVisaVoucher
-);
+router.post('/russian-visa-voucher', optionalAuthToken, serviceController.submitRussianVisaVoucher);
 
 module.exports = router;

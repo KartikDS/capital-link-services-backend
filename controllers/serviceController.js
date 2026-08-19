@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { dbRun, dbGet, dbAll } = require('../config/db');
+const { dbRun } = require('../config/db');
 
 // Helper to generate reference number e.g., CLS-LEG-2026-98124
 const generateReferenceNumber = (prefix) => {
@@ -23,7 +23,8 @@ const calculateRussianVoucherFee = (voucherType, entryType, turnaroundTime) => {
 // 1. Submit Document Legalisation
 const submitDocumentLegalisation = async (req, res, next) => {
   try {
-    const { fullName, email, phone, country, documentTypes, issuingState, documentCount, notes } = req.body;
+    const { fullName, email, phone, country, documentTypes, issuingState, documentCount, notes } =
+      req.body;
 
     if (!fullName || !email || !phone || !documentTypes || !issuingState) {
       return res.status(400).json({
@@ -37,8 +38,10 @@ const submitDocumentLegalisation = async (req, res, next) => {
     const userId = req.user ? req.user.id : null;
     const now = new Date().toISOString();
 
-    const filePaths = req.files ? req.files.map(f => f.path) : [];
-    const docTypesStr = Array.isArray(documentTypes) ? JSON.stringify(documentTypes) : documentTypes;
+    const filePaths = req.files ? req.files.map((f) => f.path) : [];
+    const docTypesStr = Array.isArray(documentTypes)
+      ? JSON.stringify(documentTypes)
+      : documentTypes;
 
     await dbRun(
       `INSERT INTO service_document_legalisation (
@@ -90,7 +93,8 @@ const submitDocumentLegalisation = async (req, res, next) => {
 // 2. Submit Police Clearance
 const submitPoliceClearance = async (req, res, next) => {
   try {
-    const { fullName, email, phone, dateOfBirth, gender, passportNumber, country, purpose } = req.body;
+    const { fullName, email, phone, dateOfBirth, gender, passportNumber, country, purpose } =
+      req.body;
 
     if (!fullName || !email || !phone || !dateOfBirth || !passportNumber || !purpose) {
       return res.status(400).json({
@@ -104,7 +108,7 @@ const submitPoliceClearance = async (req, res, next) => {
     const userId = req.user ? req.user.id : null;
     const now = new Date().toISOString();
 
-    const filePaths = req.files ? req.files.map(f => f.path) : [];
+    const filePaths = req.files ? req.files.map((f) => f.path) : [];
 
     await dbRun(
       `INSERT INTO service_police_clearance (
@@ -170,10 +174,21 @@ const submitRussianVisaVoucher = async (req, res, next) => {
       turnaroundTime
     } = req.body;
 
-    if (!voucherType || !entryType || !fullName || !passportNumber || !nationality || !email || !phone || !arrivalDate || !departureDate) {
+    if (
+      !voucherType ||
+      !entryType ||
+      !fullName ||
+      !passportNumber ||
+      !nationality ||
+      !email ||
+      !phone ||
+      !arrivalDate ||
+      !departureDate
+    ) {
       return res.status(400).json({
         success: false,
-        message: 'Voucher type, entry type, full name, passport number, nationality, email, phone, arrival date, and departure date are required'
+        message:
+          'Voucher type, entry type, full name, passport number, nationality, email, phone, arrival date, and departure date are required'
       });
     }
 
@@ -184,7 +199,9 @@ const submitRussianVisaVoucher = async (req, res, next) => {
 
     const selectedTurnaround = turnaroundTime || 'Standard';
     const estimatedFee = calculateRussianVoucherFee(voucherType, entryType, selectedTurnaround);
-    const citiesStr = Array.isArray(citiesToVisit) ? JSON.stringify(citiesToVisit) : (citiesToVisit || '');
+    const citiesStr = Array.isArray(citiesToVisit)
+      ? JSON.stringify(citiesToVisit)
+      : citiesToVisit || '';
 
     await dbRun(
       `INSERT INTO service_russian_visa_voucher (

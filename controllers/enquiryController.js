@@ -4,7 +4,8 @@ const { dbRun, dbGet, dbAll } = require('../config/db');
 // Submit Inquiry
 const submitEnquiry = async (req, res, next) => {
   try {
-    const { fullName, email, phone, serviceCategory, subject, message, preferredContactMethod } = req.body;
+    const { fullName, email, phone, serviceCategory, subject, message, preferredContactMethod } =
+      req.body;
 
     if (!fullName || !email || !subject || !message) {
       return res.status(400).json({
@@ -37,7 +38,8 @@ const submitEnquiry = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      message: 'Thank you for contacting Capital Link Services. Your inquiry has been received and our team will get back to you shortly.',
+      message:
+        'Thank you for contacting Capital Link Services. Your inquiry has been received and our team will get back to you shortly.',
       enquiry: {
         id,
         fullName,
@@ -89,7 +91,10 @@ const updateEnquiryStatus = async (req, res, next) => {
 
     const validStatuses = ['new', 'in_progress', 'resolved'];
     if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({ success: false, message: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
     }
 
     const enquiry = await dbGet('SELECT * FROM enquiries WHERE id = ?', [id]);

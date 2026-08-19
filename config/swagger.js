@@ -5,7 +5,8 @@ const swaggerSpec = {
   info: {
     title: 'Capital Link Services (CLS) API Documentation',
     version: '1.0.0',
-    description: 'REST API backend for Capital Link Services including User Auth, Document Legalisation, Police Clearance, Russian Visa Voucher, and Enquiry handling.',
+    description:
+      'REST API backend for Capital Link Services including User Auth, Document Legalisation, Police Clearance, Russian Visa Voucher, and Enquiry handling.',
     contact: {
       name: 'CLS Support',
       email: 'help@capitallinkservices.com.au'
@@ -141,7 +142,11 @@ const swaggerSpec = {
                   email: { type: 'string', example: 'jane@example.com' },
                   phone: { type: 'string', example: '+61 400 000 111' },
                   country: { type: 'string', example: 'AUS' },
-                  documentTypes: { type: 'array', items: { type: 'string' }, example: ['Apostille', 'Embassy Legalisation'] },
+                  documentTypes: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    example: ['Apostille', 'Embassy Legalisation']
+                  },
                   issuingState: { type: 'string', example: 'ACT' },
                   documentCount: { type: 'integer', example: 2 },
                   notes: { type: 'string', example: 'Requires urgent legalization' }
@@ -164,7 +169,14 @@ const swaggerSpec = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['fullName', 'email', 'phone', 'dateOfBirth', 'passportNumber', 'purpose'],
+                required: [
+                  'fullName',
+                  'email',
+                  'phone',
+                  'dateOfBirth',
+                  'passportNumber',
+                  'purpose'
+                ],
                 properties: {
                   fullName: { type: 'string', example: 'Alex Johnson' },
                   email: { type: 'string', example: 'alex@example.com' },
@@ -193,7 +205,17 @@ const swaggerSpec = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['voucherType', 'entryType', 'fullName', 'passportNumber', 'nationality', 'email', 'phone', 'arrivalDate', 'departureDate'],
+                required: [
+                  'voucherType',
+                  'entryType',
+                  'fullName',
+                  'passportNumber',
+                  'nationality',
+                  'email',
+                  'phone',
+                  'arrivalDate',
+                  'departureDate'
+                ],
                 properties: {
                   voucherType: { type: 'string', example: 'Tourist Voucher' },
                   entryType: { type: 'string', example: 'Single Entry' },
@@ -204,7 +226,11 @@ const swaggerSpec = {
                   phone: { type: 'string', example: '+61 433 999 888' },
                   arrivalDate: { type: 'string', example: '2026-09-01' },
                   departureDate: { type: 'string', example: '2026-09-20' },
-                  citiesToVisit: { type: 'array', items: { type: 'string' }, example: ['Moscow', 'Saint Petersburg'] },
+                  citiesToVisit: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    example: ['Moscow', 'Saint Petersburg']
+                  },
                   accommodationDetails: { type: 'string', example: 'Grand Hotel Moscow' },
                   turnaroundTime: { type: 'string', example: 'Standard' }
                 }
@@ -250,8 +276,14 @@ const swaggerSpec = {
                   email: { type: 'string', example: 'sarah@example.com' },
                   phone: { type: 'string', example: '+61 411 222 333' },
                   serviceCategory: { type: 'string', example: 'russian_visa_voucher' },
-                  subject: { type: 'string', example: 'Inquiry regarding tourist voucher timeline' },
-                  message: { type: 'string', example: 'Hello, how fast can I get a tourist voucher issued for Moscow?' },
+                  subject: {
+                    type: 'string',
+                    example: 'Inquiry regarding tourist voucher timeline'
+                  },
+                  message: {
+                    type: 'string',
+                    example: 'Hello, how fast can I get a tourist voucher issued for Moscow?'
+                  },
                   preferredContactMethod: { type: 'string', example: 'email' }
                 }
               }

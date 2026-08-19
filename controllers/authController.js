@@ -12,12 +12,18 @@ const register = async (req, res, next) => {
     const { fullName, email, password, phone, country, role } = req.body;
 
     if (!fullName || !email || !password) {
-      return res.status(400).json({ success: false, message: 'Full name, email, and password are required' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Full name, email, and password are required' });
     }
 
-    const existingUser = await dbGet('SELECT id FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    const existingUser = await dbGet('SELECT id FROM users WHERE email = ?', [
+      email.toLowerCase().trim()
+    ]);
     if (existingUser) {
-      return res.status(400).json({ success: false, message: 'User with this email already exists' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'User with this email already exists' });
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -30,7 +36,17 @@ const register = async (req, res, next) => {
     await dbRun(
       `INSERT INTO users (id, fullName, email, passwordHash, phone, country, role, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [userId, fullName.trim(), email.toLowerCase().trim(), passwordHash, phone || '', userCountry, userRole, now, now]
+      [
+        userId,
+        fullName.trim(),
+        email.toLowerCase().trim(),
+        passwordHash,
+        phone || '',
+        userCountry,
+        userRole,
+        now,
+        now
+      ]
     );
 
     const token = jwt.sign(
@@ -143,7 +159,9 @@ const resetPassword = async (req, res, next) => {
     const { resetToken, newPassword } = req.body;
 
     if (!resetToken || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Reset token and new password are required' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Reset token and new password are required' });
     }
 
     const user = await dbGet('SELECT * FROM users WHERE resetToken = ?', [resetToken]);
@@ -173,7 +191,10 @@ const resetPassword = async (req, res, next) => {
 // Get User Profile
 const getProfile = async (req, res, next) => {
   try {
-    const user = await dbGet('SELECT id, fullName, email, phone, country, role, createdAt FROM users WHERE id = ?', [req.user.id]);
+    const user = await dbGet(
+      'SELECT id, fullName, email, phone, country, role, createdAt FROM users WHERE id = ?',
+      [req.user.id]
+    );
     if (!user) {
       return res.status(404).json({ success: false, message: 'User profile not found' });
     }

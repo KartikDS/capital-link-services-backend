@@ -8,6 +8,11 @@ router.post('/', enquiryController.submitEnquiry);
 
 // Admin endpoints
 router.get('/', authenticateToken, requireRole('admin'), enquiryController.getAllEnquiries);
-router.patch('/:id/status', authenticateToken, requireRole('admin'), enquiryController.updateEnquiryStatus);
+router.patch(
+  '/:id/status',
+  authenticateToken,
+  requireRole('admin'),
+  enquiryController.updateEnquiryStatus
+);
 
 module.exports = router;

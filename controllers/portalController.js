@@ -19,10 +19,18 @@ const mapStageAndProgress = (status) => {
     return { stage: 'action-required', progress: 25, milestone: 'Action required from client' };
   }
   if (s === 'submitted' || s === 'new' || s === 'received') {
-    return { stage: 'in-progress', progress: 40, milestone: 'Document under review by CLS consultant' };
+    return {
+      stage: 'in-progress',
+      progress: 40,
+      milestone: 'Document under review by CLS consultant'
+    };
   }
   if (s === 'processing' || s === 'embassy' || s === 'dfat') {
-    return { stage: 'in-progress', progress: 70, milestone: 'Processing at government / embassy authority' };
+    return {
+      stage: 'in-progress',
+      progress: 70,
+      milestone: 'Processing at government / embassy authority'
+    };
   }
   if (s === 'ready' || s === 'ready_for_collection') {
     return { stage: 'ready', progress: 90, milestone: 'Ready for collection / courier dispatch' };
@@ -41,16 +49,28 @@ const getDashboardSummary = async (req, res, next) => {
 
     // Fetch user profile
     const user = await dbGet('SELECT * FROM users WHERE id = ? OR email = ?', [userId, userEmail]);
-    const profile = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [userId, userEmail]);
+    const profile = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
+      userId,
+      userEmail
+    ]);
 
     // Fetch orders across tables
-    const legOrders = await dbAll('SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
-    const polOrders = await dbAll('SELECT * FROM service_police_clearance WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
-    const rvvOrders = await dbAll('SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
+    const legOrders = await dbAll(
+      'SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
+    const polOrders = await dbAll(
+      'SELECT * FROM service_police_clearance WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
+    const rvvOrders = await dbAll(
+      'SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
 
     // Format orders
     const allOrders = [
-      ...legOrders.map(item => {
+      ...legOrders.map((item) => {
         const { stage, progress, milestone } = mapStageAndProgress(item.status);
         return {
           reference: item.referenceNumber,
@@ -69,7 +89,7 @@ const getDashboardSummary = async (req, res, next) => {
           departureDate: null
         };
       }),
-      ...polOrders.map(item => {
+      ...polOrders.map((item) => {
         const { stage, progress, milestone } = mapStageAndProgress(item.status);
         return {
           reference: item.referenceNumber,
@@ -88,7 +108,7 @@ const getDashboardSummary = async (req, res, next) => {
           departureDate: null
         };
       }),
-      ...rvvOrders.map(item => {
+      ...rvvOrders.map((item) => {
         const { stage, progress, milestone } = mapStageAndProgress(item.status);
         return {
           reference: item.referenceNumber,
@@ -110,16 +130,22 @@ const getDashboardSummary = async (req, res, next) => {
     ].sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
     // Stats calculation
-    const activeOrders = allOrders.filter(o => o.stage !== 'completed');
-    const actionRequiredCount = allOrders.filter(o => o.stage === 'action-required').length;
+    const activeOrders = allOrders.filter((o) => o.stage !== 'completed');
+    const actionRequiredCount = allOrders.filter((o) => o.stage === 'action-required').length;
 
     // Documents
-    const docs = await dbAll('SELECT * FROM portal_documents WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
-    const readyDocsCount = docs.filter(d => d.state === 'ready').length;
+    const docs = await dbAll(
+      'SELECT * FROM portal_documents WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
+    const readyDocsCount = docs.filter((d) => d.state === 'ready').length;
 
     // Invoices
-    const invoices = await dbAll('SELECT * FROM portal_invoices WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
-    const dueInvoices = invoices.filter(inv => inv.state === 'due' || inv.state === 'overdue');
+    const invoices = await dbAll(
+      'SELECT * FROM portal_invoices WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
+    const dueInvoices = invoices.filter((inv) => inv.state === 'due' || inv.state === 'overdue');
     const outstandingCents = dueInvoices.reduce((sum, inv) => sum + (inv.amountCents || 0), 0);
 
     const stats = [
@@ -127,14 +153,20 @@ const getDashboardSummary = async (req, res, next) => {
         id: 'active-orders',
         label: 'Active orders',
         value: activeOrders.length,
-        hint: activeOrders.length === 1 ? '1 application in progress' : `${activeOrders.length} applications in progress`,
+        hint:
+          activeOrders.length === 1
+            ? '1 application in progress'
+            : `${activeOrders.length} applications in progress`,
         tone: 'sky'
       },
       {
         id: 'action-required',
         label: 'Action required',
         value: actionRequiredCount,
-        hint: actionRequiredCount === 0 ? 'Everything is moving' : `${actionRequiredCount} item needs attention`,
+        hint:
+          actionRequiredCount === 0
+            ? 'Everything is moving'
+            : `${actionRequiredCount} item needs attention`,
         tone: actionRequiredCount > 0 ? 'alert' : 'navy'
       },
       {
@@ -147,7 +179,7 @@ const getDashboardSummary = async (req, res, next) => {
       {
         id: 'completed-jobs',
         label: 'Completed jobs',
-        value: allOrders.filter(o => o.stage === 'completed').length,
+        value: allOrders.filter((o) => o.stage === 'completed').length,
         hint: 'Past successful lodgements',
         tone: 'navy'
       }
@@ -156,9 +188,15 @@ const getDashboardSummary = async (req, res, next) => {
     res.json({
       success: true,
       user: {
-        firstName: user?.fullName ? user.fullName.split(' ')[0] : (req.user?.firstName || 'Client'),
+        firstName: user?.fullName ? user.fullName.split(' ')[0] : req.user?.firstName || 'Client',
         fullName: user?.fullName || 'Client User',
-        initials: user?.fullName ? user.fullName.split(' ').map(n => n[0]).join('').toUpperCase() : 'CU',
+        initials: user?.fullName
+          ? user.fullName
+              .split(' ')
+              .map((n) => n[0])
+              .join('')
+              .toUpperCase()
+          : 'CU',
         email: userEmail,
         company: profile?.company || ''
       },
@@ -193,12 +231,21 @@ const getPortalOrders = async (req, res, next) => {
     const userEmail = req.user?.email || '';
     const { stage, search } = req.query;
 
-    const legOrders = await dbAll('SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ?', [userId, userEmail]);
-    const polOrders = await dbAll('SELECT * FROM service_police_clearance WHERE userId = ? OR email = ?', [userId, userEmail]);
-    const rvvOrders = await dbAll('SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ?', [userId, userEmail]);
+    const legOrders = await dbAll(
+      'SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ?',
+      [userId, userEmail]
+    );
+    const polOrders = await dbAll(
+      'SELECT * FROM service_police_clearance WHERE userId = ? OR email = ?',
+      [userId, userEmail]
+    );
+    const rvvOrders = await dbAll(
+      'SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ?',
+      [userId, userEmail]
+    );
 
     let allOrders = [
-      ...legOrders.map(item => {
+      ...legOrders.map((item) => {
         const { stage: stg, progress, milestone } = mapStageAndProgress(item.status);
         return {
           reference: item.referenceNumber,
@@ -217,7 +264,7 @@ const getPortalOrders = async (req, res, next) => {
           departureDate: null
         };
       }),
-      ...polOrders.map(item => {
+      ...polOrders.map((item) => {
         const { stage: stg, progress, milestone } = mapStageAndProgress(item.status);
         return {
           reference: item.referenceNumber,
@@ -236,7 +283,7 @@ const getPortalOrders = async (req, res, next) => {
           departureDate: null
         };
       }),
-      ...rvvOrders.map(item => {
+      ...rvvOrders.map((item) => {
         const { stage: stg, progress, milestone } = mapStageAndProgress(item.status);
         return {
           reference: item.referenceNumber,
@@ -258,16 +305,17 @@ const getPortalOrders = async (req, res, next) => {
     ].sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
     if (stage) {
-      allOrders = allOrders.filter(o => o.stage === stage);
+      allOrders = allOrders.filter((o) => o.stage === stage);
     }
 
     if (search) {
       const q = search.toLowerCase();
-      allOrders = allOrders.filter(o =>
-        o.reference.toLowerCase().includes(q) ||
-        o.service.toLowerCase().includes(q) ||
-        o.applicant.toLowerCase().includes(q) ||
-        o.destination.toLowerCase().includes(q)
+      allOrders = allOrders.filter(
+        (o) =>
+          o.reference.toLowerCase().includes(q) ||
+          o.service.toLowerCase().includes(q) ||
+          o.applicant.toLowerCase().includes(q) ||
+          o.destination.toLowerCase().includes(q)
       );
     }
 
@@ -308,12 +356,19 @@ const getPortalDocuments = async (req, res, next) => {
     res.json({
       success: true,
       count: docs.length,
-      documents: docs.map(d => ({
+      documents: docs.map((d) => ({
         id: d.id,
         name: d.name,
         reference: d.reference,
         state: d.state,
-        meta: d.meta || `${path.extname(d.originalName || '').replace('.', '').toUpperCase() || 'FILE'} · ${(d.fileSizeBytes ? (d.fileSizeBytes / 1024 / 1024).toFixed(1) : '1.0')} MB · ${formatDate(d.createdAt)}`,
+        meta:
+          d.meta ||
+          `${
+            path
+              .extname(d.originalName || '')
+              .replace('.', '')
+              .toUpperCase() || 'FILE'
+          } · ${d.fileSizeBytes ? (d.fileSizeBytes / 1024 / 1024).toFixed(1) : '1.0'} MB · ${formatDate(d.createdAt)}`,
         filePath: d.filePath,
         url: d.filePath ? `/uploads/documents/${path.basename(d.filePath)}` : null,
         createdAt: d.createdAt
@@ -336,32 +391,37 @@ const uploadPortalDocument = async (req, res, next) => {
     }
 
     if (!reference || !name) {
-      return res.status(400).json({ success: false, message: 'Order reference and document name are required.' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Order reference and document name are required.' });
     }
 
     const docId = `DOC-${Date.now()}-${Math.round(Math.random() * 1000)}`;
     const now = new Date().toISOString();
     const meta = `${path.extname(req.file.originalname).replace('.', '').toUpperCase()} · ${(req.file.size / 1024 / 1024).toFixed(1)} MB · ${formatDate(now)}`;
 
-    await dbRun(`
+    await dbRun(
+      `
       INSERT INTO portal_documents (
         id, userId, email, reference, name, state, meta, filePath, originalName, fileSizeBytes, mimeType, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      docId,
-      userId,
-      userEmail,
-      reference,
-      name,
-      'received',
-      meta,
-      req.file.path,
-      req.file.originalname,
-      req.file.size,
-      req.file.mimetype,
-      now,
-      now
-    ]);
+    `,
+      [
+        docId,
+        userId,
+        userEmail,
+        reference,
+        name,
+        'received',
+        meta,
+        req.file.path,
+        req.file.originalname,
+        req.file.size,
+        req.file.mimetype,
+        now,
+        now
+      ]
+    );
 
     res.status(201).json({
       success: true,
@@ -389,12 +449,15 @@ const getPassportPhotos = async (req, res, next) => {
     const userId = req.user?.id || '';
     const userEmail = req.user?.email || '';
 
-    const photos = await dbAll('SELECT * FROM portal_passport_photos WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
+    const photos = await dbAll(
+      'SELECT * FROM portal_passport_photos WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
 
     res.json({
       success: true,
       count: photos.length,
-      submissions: photos.map(p => ({
+      submissions: photos.map((p) => ({
         id: p.id,
         applicant: p.applicant,
         reference: p.reference || null,
@@ -424,25 +487,28 @@ const uploadPassportPhoto = async (req, res, next) => {
     const photoId = `PHO-${Date.now()}-${Math.round(Math.random() * 1000)}`;
     const now = new Date().toISOString();
 
-    await dbRun(`
+    await dbRun(
+      `
       INSERT INTO portal_passport_photos (
         id, userId, email, applicant, reference, state, note, filePath, originalName, fileSizeBytes, mimeType, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      photoId,
-      userId,
-      userEmail,
-      applicant,
-      reference || null,
-      'in-review',
-      'Photo uploaded successfully and submitted for validation against passport standards.',
-      req.file.path,
-      req.file.originalname,
-      req.file.size,
-      req.file.mimetype,
-      now,
-      now
-    ]);
+    `,
+      [
+        photoId,
+        userId,
+        userEmail,
+        applicant,
+        reference || null,
+        'in-review',
+        'Photo uploaded successfully and submitted for validation against passport standards.',
+        req.file.path,
+        req.file.originalname,
+        req.file.size,
+        req.file.mimetype,
+        now,
+        now
+      ]
+    );
 
     res.status(201).json({
       success: true,
@@ -469,22 +535,31 @@ const getProfile = async (req, res, next) => {
     const userEmail = req.user?.email || '';
 
     const user = await dbGet('SELECT * FROM users WHERE id = ? OR email = ?', [userId, userEmail]);
-    const profile = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [userId, userEmail]);
+    const profile = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
+      userId,
+      userEmail
+    ]);
 
     const names = (user?.fullName || '').split(' ');
     const firstName = profile?.firstName || names[0] || '';
     const lastName = profile?.lastName || names.slice(1).join(' ') || '';
 
-    const address = profile?.addressJson ? JSON.parse(profile.addressJson) : {
-      line1: '',
-      city: '',
-      state: '',
-      postcode: '',
-      country: 'Australia'
-    };
+    const address = profile?.addressJson
+      ? JSON.parse(profile.addressJson)
+      : {
+          line1: '',
+          city: '',
+          state: '',
+          postcode: '',
+          country: 'Australia'
+        };
 
-    const delivery = profile?.deliveryAddressJson ? JSON.parse(profile.deliveryAddressJson) : { ...address };
-    const billing = profile?.billingAddressJson ? JSON.parse(profile.billingAddressJson) : { ...address };
+    const delivery = profile?.deliveryAddressJson
+      ? JSON.parse(profile.deliveryAddressJson)
+      : { ...address };
+    const billing = profile?.billingAddressJson
+      ? JSON.parse(profile.billingAddressJson)
+      : { ...address };
 
     res.json({
       success: true,
@@ -530,52 +605,66 @@ const updateProfile = async (req, res, next) => {
     const fullName = `${firstName || ''} ${lastName || ''}`.trim();
 
     if (userEmail) {
-      await dbRun('UPDATE users SET fullName = ?, phone = ?, updatedAt = ? WHERE email = ?', [fullName, phone, now, userEmail]);
+      await dbRun('UPDATE users SET fullName = ?, phone = ?, updatedAt = ? WHERE email = ?', [
+        fullName,
+        phone,
+        now,
+        userEmail
+      ]);
     }
 
-    const existing = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [userId, userEmail]);
+    const existing = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
+      userId,
+      userEmail
+    ]);
 
     if (existing) {
-      await dbRun(`
+      await dbRun(
+        `
         UPDATE portal_profiles SET
           title = ?, firstName = ?, lastName = ?, phone = ?, mobile = ?, company = ?, passportNumber = ?,
           addressJson = ?, deliveryAddressJson = ?, billingAddressJson = ?, updatedAt = ?
         WHERE userId = ? OR email = ?
-      `, [
-        title || existing.title,
-        firstName || existing.firstName,
-        lastName || existing.lastName,
-        phone || existing.phone,
-        mobile || existing.mobile,
-        company || existing.company,
-        passportNumber || existing.passportNumber,
-        address ? JSON.stringify(address) : existing.addressJson,
-        delivery ? JSON.stringify(delivery) : existing.deliveryAddressJson,
-        billing ? JSON.stringify(billing) : existing.billingAddressJson,
-        now,
-        userId,
-        userEmail
-      ]);
+      `,
+        [
+          title || existing.title,
+          firstName || existing.firstName,
+          lastName || existing.lastName,
+          phone || existing.phone,
+          mobile || existing.mobile,
+          company || existing.company,
+          passportNumber || existing.passportNumber,
+          address ? JSON.stringify(address) : existing.addressJson,
+          delivery ? JSON.stringify(delivery) : existing.deliveryAddressJson,
+          billing ? JSON.stringify(billing) : existing.billingAddressJson,
+          now,
+          userId,
+          userEmail
+        ]
+      );
     } else {
-      await dbRun(`
+      await dbRun(
+        `
         INSERT INTO portal_profiles (
           userId, title, firstName, lastName, phone, mobile, company, email, passportNumber, addressJson, deliveryAddressJson, billingAddressJson, updatedAt
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        userId || `USER-${Date.now()}`,
-        title || 'Mr',
-        firstName || '',
-        lastName || '',
-        phone || '',
-        mobile || '',
-        company || '',
-        userEmail,
-        passportNumber || '',
-        JSON.stringify(address || {}),
-        JSON.stringify(delivery || {}),
-        JSON.stringify(billing || {}),
-        now
-      ]);
+      `,
+        [
+          userId || `USER-${Date.now()}`,
+          title || 'Mr',
+          firstName || '',
+          lastName || '',
+          phone || '',
+          mobile || '',
+          company || '',
+          userEmail,
+          passportNumber || '',
+          JSON.stringify(address || {}),
+          JSON.stringify(delivery || {}),
+          JSON.stringify(billing || {}),
+          now
+        ]
+      );
     }
 
     res.json({
@@ -593,15 +682,18 @@ const getInvoices = async (req, res, next) => {
     const userId = req.user?.id || '';
     const userEmail = req.user?.email || '';
 
-    const invoices = await dbAll('SELECT * FROM portal_invoices WHERE userId = ? OR email = ? ORDER BY createdAt DESC', [userId, userEmail]);
-    const dueInvoices = invoices.filter(inv => inv.state === 'due' || inv.state === 'overdue');
+    const invoices = await dbAll(
+      'SELECT * FROM portal_invoices WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
+      [userId, userEmail]
+    );
+    const dueInvoices = invoices.filter((inv) => inv.state === 'due' || inv.state === 'overdue');
     const balanceCents = dueInvoices.reduce((sum, inv) => sum + (inv.amountCents || 0), 0);
 
     res.json({
       success: true,
       count: invoices.length,
       balanceCents,
-      invoices: invoices.map(inv => ({
+      invoices: invoices.map((inv) => ({
         id: inv.id,
         number: inv.number,
         reference: inv.reference,
