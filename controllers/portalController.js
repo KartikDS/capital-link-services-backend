@@ -1,4 +1,4 @@
-const { dbGet, dbAll, dbRun } = require('../config/db');
+const db = require('../config/db');
 const path = require('path');
 
 // Helper to format date strings for display
@@ -48,22 +48,25 @@ const getDashboardSummary = async (req, res, next) => {
     const userEmail = req.user?.email || '';
 
     // Fetch user profile
-    const user = await dbGet('SELECT * FROM users WHERE id = ? OR email = ?', [userId, userEmail]);
-    const profile = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
+    const user = await db.dbGet('SELECT * FROM users WHERE id = ? OR email = ?', [
+      userId,
+      userEmail
+    ]);
+    const profile = await db.dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
       userId,
       userEmail
     ]);
 
     // Fetch orders across tables
-    const legOrders = await dbAll(
+    const legOrders = await db.dbAll(
       'SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
-    const polOrders = await dbAll(
+    const polOrders = await db.dbAll(
       'SELECT * FROM service_police_clearance WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
-    const rvvOrders = await dbAll(
+    const rvvOrders = await db.dbAll(
       'SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
@@ -134,14 +137,14 @@ const getDashboardSummary = async (req, res, next) => {
     const actionRequiredCount = allOrders.filter((o) => o.stage === 'action-required').length;
 
     // Documents
-    const docs = await dbAll(
+    const docs = await db.dbAll(
       'SELECT * FROM portal_documents WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
     const readyDocsCount = docs.filter((d) => d.state === 'ready').length;
 
     // Invoices
-    const invoices = await dbAll(
+    const invoices = await db.dbAll(
       'SELECT * FROM portal_invoices WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
@@ -231,15 +234,15 @@ const getPortalOrders = async (req, res, next) => {
     const userEmail = req.user?.email || '';
     const { stage, search } = req.query;
 
-    const legOrders = await dbAll(
+    const legOrders = await db.dbAll(
       'SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ?',
       [userId, userEmail]
     );
-    const polOrders = await dbAll(
+    const polOrders = await db.dbAll(
       'SELECT * FROM service_police_clearance WHERE userId = ? OR email = ?',
       [userId, userEmail]
     );
-    const rvvOrders = await dbAll(
+    const rvvOrders = await db.dbAll(
       'SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ?',
       [userId, userEmail]
     );
@@ -351,7 +354,7 @@ const getPortalDocuments = async (req, res, next) => {
 
     sql += ' ORDER BY createdAt DESC';
 
-    const docs = await dbAll(sql, params);
+    const docs = await db.dbAll(sql, params);
 
     res.json({
       success: true,
@@ -400,7 +403,7 @@ const uploadPortalDocument = async (req, res, next) => {
     const now = new Date().toISOString();
     const meta = `${path.extname(req.file.originalname).replace('.', '').toUpperCase()} · ${(req.file.size / 1024 / 1024).toFixed(1)} MB · ${formatDate(now)}`;
 
-    await dbRun(
+    await db.dbRun(
       `
       INSERT INTO portal_documents (
         id, userId, email, reference, name, state, meta, filePath, originalName, fileSizeBytes, mimeType, createdAt, updatedAt
@@ -449,7 +452,7 @@ const getPassportPhotos = async (req, res, next) => {
     const userId = req.user?.id || '';
     const userEmail = req.user?.email || '';
 
-    const photos = await dbAll(
+    const photos = await db.dbAll(
       'SELECT * FROM portal_passport_photos WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
@@ -487,7 +490,7 @@ const uploadPassportPhoto = async (req, res, next) => {
     const photoId = `PHO-${Date.now()}-${Math.round(Math.random() * 1000)}`;
     const now = new Date().toISOString();
 
-    await dbRun(
+    await db.dbRun(
       `
       INSERT INTO portal_passport_photos (
         id, userId, email, applicant, reference, state, note, filePath, originalName, fileSizeBytes, mimeType, createdAt, updatedAt
@@ -534,8 +537,11 @@ const getProfile = async (req, res, next) => {
     const userId = req.user?.id || '';
     const userEmail = req.user?.email || '';
 
-    const user = await dbGet('SELECT * FROM users WHERE id = ? OR email = ?', [userId, userEmail]);
-    const profile = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
+    const user = await db.dbGet('SELECT * FROM users WHERE id = ? OR email = ?', [
+      userId,
+      userEmail
+    ]);
+    const profile = await db.dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
       userId,
       userEmail
     ]);
@@ -605,7 +611,7 @@ const updateProfile = async (req, res, next) => {
     const fullName = `${firstName || ''} ${lastName || ''}`.trim();
 
     if (userEmail) {
-      await dbRun('UPDATE users SET fullName = ?, phone = ?, updatedAt = ? WHERE email = ?', [
+      await db.dbRun('UPDATE users SET fullName = ?, phone = ?, updatedAt = ? WHERE email = ?', [
         fullName,
         phone,
         now,
@@ -613,13 +619,13 @@ const updateProfile = async (req, res, next) => {
       ]);
     }
 
-    const existing = await dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
+    const existing = await db.dbGet('SELECT * FROM portal_profiles WHERE userId = ? OR email = ?', [
       userId,
       userEmail
     ]);
 
     if (existing) {
-      await dbRun(
+      await db.dbRun(
         `
         UPDATE portal_profiles SET
           title = ?, firstName = ?, lastName = ?, phone = ?, mobile = ?, company = ?, passportNumber = ?,
@@ -643,7 +649,7 @@ const updateProfile = async (req, res, next) => {
         ]
       );
     } else {
-      await dbRun(
+      await db.dbRun(
         `
         INSERT INTO portal_profiles (
           userId, title, firstName, lastName, phone, mobile, company, email, passportNumber, addressJson, deliveryAddressJson, billingAddressJson, updatedAt
@@ -682,7 +688,7 @@ const getInvoices = async (req, res, next) => {
     const userId = req.user?.id || '';
     const userEmail = req.user?.email || '';
 
-    const invoices = await dbAll(
+    const invoices = await db.dbAll(
       'SELECT * FROM portal_invoices WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );

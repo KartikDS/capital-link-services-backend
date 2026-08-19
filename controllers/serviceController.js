@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { dbRun } = require('../config/db');
+const db = require('../config/db');
 
 // Helper to generate reference number e.g., CLS-LEG-2026-98124
 const generateReferenceNumber = (prefix) => {
@@ -43,7 +43,7 @@ const submitDocumentLegalisation = async (req, res, next) => {
       ? JSON.stringify(documentTypes)
       : documentTypes;
 
-    await dbRun(
+    await db.dbRun(
       `INSERT INTO service_document_legalisation (
         id, referenceNumber, userId, fullName, email, phone, country, documentTypes, issuingState, documentCount, notes, filePaths, status, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -110,7 +110,7 @@ const submitPoliceClearance = async (req, res, next) => {
 
     const filePaths = req.files ? req.files.map((f) => f.path) : [];
 
-    await dbRun(
+    await db.dbRun(
       `INSERT INTO service_police_clearance (
         id, referenceNumber, userId, fullName, email, phone, dateOfBirth, gender, passportNumber, country, purpose, identityDocPaths, status, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -203,7 +203,7 @@ const submitRussianVisaVoucher = async (req, res, next) => {
       ? JSON.stringify(citiesToVisit)
       : citiesToVisit || '';
 
-    await dbRun(
+    await db.dbRun(
       `INSERT INTO service_russian_visa_voucher (
         id, referenceNumber, userId, voucherType, entryType, fullName, passportNumber, nationality, email, phone, arrivalDate, departureDate, citiesToVisit, accommodationDetails, turnaroundTime, estimatedFee, status, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

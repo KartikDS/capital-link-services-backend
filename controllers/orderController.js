@@ -1,4 +1,4 @@
-const { dbGet, dbAll, dbRun } = require('../config/db');
+const db = require('../config/db');
 const path = require('path');
 
 // Track Order by Reference Number (GET /api/orders/track/:referenceNumber)
@@ -16,32 +16,32 @@ const trackOrder = async (req, res, next) => {
     let serviceType = '';
 
     if (ref.startsWith('CLS-LEG-')) {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_document_legalisation WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       serviceType = 'Document Legalisation';
     } else if (ref.startsWith('CLS-POL-')) {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_police_clearance WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       serviceType = 'Police Clearance';
     } else if (ref.startsWith('CLS-RVV-')) {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_russian_visa_voucher WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       serviceType = 'Russian Visa Voucher';
     } else {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_document_legalisation WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       if (order) serviceType = 'Document Legalisation';
 
       if (!order) {
-        order = await dbGet(
+        order = await db.dbGet(
           'SELECT * FROM service_police_clearance WHERE UPPER(referenceNumber) = ?',
           [ref]
         );
@@ -49,7 +49,7 @@ const trackOrder = async (req, res, next) => {
       }
 
       if (!order) {
-        order = await dbGet(
+        order = await db.dbGet(
           'SELECT * FROM service_russian_visa_voucher WHERE UPPER(referenceNumber) = ?',
           [ref]
         );
@@ -106,38 +106,38 @@ const trackOrderPost = async (req, res, next) => {
     let serviceType = '';
 
     if (ref.startsWith('CLS-LEG-')) {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_document_legalisation WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       serviceType = 'Document Legalisation';
     } else if (ref.startsWith('CLS-POL-')) {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_police_clearance WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       serviceType = 'Police Clearance';
     } else if (ref.startsWith('CLS-RVV-')) {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_russian_visa_voucher WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       serviceType = 'Russian Visa Voucher';
     } else {
-      order = await dbGet(
+      order = await db.dbGet(
         'SELECT * FROM service_document_legalisation WHERE UPPER(referenceNumber) = ?',
         [ref]
       );
       if (order) serviceType = 'Document Legalisation';
       if (!order) {
-        order = await dbGet(
+        order = await db.dbGet(
           'SELECT * FROM service_police_clearance WHERE UPPER(referenceNumber) = ?',
           [ref]
         );
         if (order) serviceType = 'Police Clearance';
       }
       if (!order) {
-        order = await dbGet(
+        order = await db.dbGet(
           'SELECT * FROM service_russian_visa_voucher WHERE UPPER(referenceNumber) = ?',
           [ref]
         );
@@ -171,8 +171,8 @@ const trackOrderPost = async (req, res, next) => {
 // Create Russian Visa Voucher Order (POST /api/orders/russian-visa-voucher)
 const createRussianVisaVoucherOrder = async (req, res, next) => {
   try {
-    const query = req.query;
-    const body = req.body;
+    const query = req.query || {};
+    const body = req.body || {};
 
     const voucherType = body.voucherType || query.type || body.type || 'tourist';
     const entryType = body.entryType || query.entry || body.entry || 'single';
@@ -215,7 +215,7 @@ const createRussianVisaVoucherOrder = async (req, res, next) => {
     const referenceNumber = `CLS-RVV-${Math.floor(100000 + Math.random() * 900000)}`;
     const now = new Date().toISOString();
 
-    await dbRun(
+    await db.dbRun(
       `
       INSERT INTO service_russian_visa_voucher (
         id, referenceNumber, userId, voucherType, entryType, fullName, passportNumber, nationality,
@@ -250,7 +250,7 @@ const createRussianVisaVoucherOrder = async (req, res, next) => {
     let fileInfo = null;
     if (req.file) {
       const docId = `DOC-${Date.now()}`;
-      await dbRun(
+      await db.dbRun(
         `
         INSERT INTO portal_documents (
           id, userId, email, reference, name, state, meta, filePath, originalName, fileSizeBytes, mimeType, createdAt, updatedAt
@@ -311,8 +311,8 @@ const createRussianVisaVoucherOrder = async (req, res, next) => {
 // Create Document Legalisation / Attestation Order (POST /api/orders/attestation)
 const createAttestationOrder = async (req, res, next) => {
   try {
-    const query = req.query;
-    const body = req.body;
+    const query = req.query || {};
+    const body = req.body || {};
 
     const documentCategory = body.type || query.type || body.category || 'personal';
     const destinationCountry = body.destination || query.destination || 'united-arab-emirates';
@@ -338,7 +338,7 @@ const createAttestationOrder = async (req, res, next) => {
       uploadedFiles = req.files.map((f) => f.path);
       for (const f of req.files) {
         const docId = `DOC-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        await dbRun(
+        await db.dbRun(
           `
           INSERT INTO portal_documents (
             id, userId, email, reference, name, state, meta, filePath, originalName, fileSizeBytes, mimeType, createdAt, updatedAt
@@ -363,7 +363,7 @@ const createAttestationOrder = async (req, res, next) => {
       }
     }
 
-    await dbRun(
+    await db.dbRun(
       `
       INSERT INTO service_document_legalisation (
         id, referenceNumber, userId, fullName, email, phone, country, documentTypes, issuingState,
@@ -418,8 +418,8 @@ const createAttestationOrder = async (req, res, next) => {
 // Create Police Clearance Order (POST /api/orders/police-clearance)
 const createPoliceClearanceOrder = async (req, res, next) => {
   try {
-    const query = req.query;
-    const body = req.body;
+    const query = req.query || {};
+    const body = req.body || {};
 
     const nationality = body.nationality || query.nationality || 'afghanistan';
     const clearanceType =
@@ -449,7 +449,7 @@ const createPoliceClearanceOrder = async (req, res, next) => {
       uploadedFiles = req.files.map((f) => f.path);
     }
 
-    await dbRun(
+    await db.dbRun(
       `
       INSERT INTO service_police_clearance (
         id, referenceNumber, userId, fullName, email, phone, dateOfBirth, gender, passportNumber,
@@ -512,7 +512,7 @@ const checkoutOrder = async (req, res, next) => {
     if (service === 'russian-visa-voucher') {
       const ref = `CLS-RVV-${Math.floor(100000 + Math.random() * 900000)}`;
       const id = `RVV-${Date.now()}`;
-      await dbRun(
+      await db.dbRun(
         `
         INSERT INTO service_russian_visa_voucher (
           id, referenceNumber, userId, voucherType, entryType, fullName, passportNumber, nationality,
@@ -553,7 +553,7 @@ const checkoutOrder = async (req, res, next) => {
     if (service === 'police-clearance') {
       const ref = `CLS-POL-${Math.floor(100000 + Math.random() * 900000)}`;
       const id = `POL-${Date.now()}`;
-      await dbRun(
+      await db.dbRun(
         `
         INSERT INTO service_police_clearance (
           id, referenceNumber, userId, fullName, email, phone, dateOfBirth, gender, passportNumber,
@@ -598,15 +598,15 @@ const getMyApplications = async (req, res, next) => {
     const userId = req.user.id;
     const userEmail = req.user.email;
 
-    const legList = await dbAll(
+    const legList = await db.dbAll(
       'SELECT * FROM service_document_legalisation WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
-    const polList = await dbAll(
+    const polList = await db.dbAll(
       'SELECT * FROM service_police_clearance WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
-    const rvvList = await dbAll(
+    const rvvList = await db.dbAll(
       'SELECT * FROM service_russian_visa_voucher WHERE userId = ? OR email = ? ORDER BY createdAt DESC',
       [userId, userEmail]
     );
@@ -646,19 +646,19 @@ const updateOrderStatus = async (req, res, next) => {
     let updated = false;
 
     if (ref.startsWith('CLS-LEG-')) {
-      const resDb = await dbRun(
+      const resDb = await db.dbRun(
         'UPDATE service_document_legalisation SET status = ?, updatedAt = ? WHERE UPPER(referenceNumber) = ?',
         [status, now, ref]
       );
       if (resDb.changes > 0) updated = true;
     } else if (ref.startsWith('CLS-POL-')) {
-      const resDb = await dbRun(
+      const resDb = await db.dbRun(
         'UPDATE service_police_clearance SET status = ?, updatedAt = ? WHERE UPPER(referenceNumber) = ?',
         [status, now, ref]
       );
       if (resDb.changes > 0) updated = true;
     } else if (ref.startsWith('CLS-RVV-')) {
-      const resDb = await dbRun(
+      const resDb = await db.dbRun(
         'UPDATE service_russian_visa_voucher SET status = ?, updatedAt = ? WHERE UPPER(referenceNumber) = ?',
         [status, now, ref]
       );

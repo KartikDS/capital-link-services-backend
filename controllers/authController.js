@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { dbGet, dbRun } = require('../config/db');
+const db = require('../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'cls_super_secret_jwt_key_2026_australia';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
@@ -17,7 +17,7 @@ const register = async (req, res, next) => {
         .json({ success: false, message: 'Full name, email, and password are required' });
     }
 
-    const existingUser = await dbGet('SELECT id FROM users WHERE email = ?', [
+    const existingUser = await db.dbGet('SELECT id FROM users WHERE email = ?', [
       email.toLowerCase().trim()
     ]);
     if (existingUser) {
@@ -33,7 +33,7 @@ const register = async (req, res, next) => {
     const userCountry = country || 'AUS';
     const now = new Date().toISOString();
 
-    await dbRun(
+    await db.dbRun(
       `INSERT INTO users (id, fullName, email, passwordHash, phone, country, role, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -82,7 +82,9 @@ const login = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
-    const user = await dbGet('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    const user = await db.dbGet('SELECT * FROM users WHERE email = ?', [
+      email.toLowerCase().trim()
+    ]);
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -125,7 +127,9 @@ const forgotPassword = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Email is required' });
     }
 
-    const user = await dbGet('SELECT * FROM users WHERE email = ?', [email.toLowerCase().trim()]);
+    const user = await db.dbGet('SELECT * FROM users WHERE email = ?', [
+      email.toLowerCase().trim()
+    ]);
     if (!user) {
       // Return success to avoid email enumeration
       return res.json({
@@ -137,7 +141,7 @@ const forgotPassword = async (req, res, next) => {
     const resetToken = crypto.randomBytes(32).toString('hex');
     const resetTokenExpiry = Date.now() + 3600000; // 1 hour expiry
 
-    await dbRun(
+    await db.dbRun(
       'UPDATE users SET resetToken = ?, resetTokenExpiry = ?, updatedAt = ? WHERE id = ?',
       [resetToken, resetTokenExpiry, new Date().toISOString(), user.id]
     );
@@ -164,7 +168,7 @@ const resetPassword = async (req, res, next) => {
         .json({ success: false, message: 'Reset token and new password are required' });
     }
 
-    const user = await dbGet('SELECT * FROM users WHERE resetToken = ?', [resetToken]);
+    const user = await db.dbGet('SELECT * FROM users WHERE resetToken = ?', [resetToken]);
 
     if (!user || !user.resetTokenExpiry || user.resetTokenExpiry < Date.now()) {
       return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
@@ -174,7 +178,7 @@ const resetPassword = async (req, res, next) => {
     const passwordHash = await bcrypt.hash(newPassword, salt);
     const now = new Date().toISOString();
 
-    await dbRun(
+    await db.dbRun(
       'UPDATE users SET passwordHash = ?, resetToken = NULL, resetTokenExpiry = NULL, updatedAt = ? WHERE id = ?',
       [passwordHash, now, user.id]
     );
@@ -191,7 +195,7 @@ const resetPassword = async (req, res, next) => {
 // Get User Profile
 const getProfile = async (req, res, next) => {
   try {
-    const user = await dbGet(
+    const user = await db.dbGet(
       'SELECT id, fullName, email, phone, country, role, createdAt FROM users WHERE id = ?',
       [req.user.id]
     );

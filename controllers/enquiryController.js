@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { dbRun, dbGet, dbAll } = require('../config/db');
+const db = require('../config/db');
 
 // Submit Inquiry
 const submitEnquiry = async (req, res, next) => {
@@ -17,7 +17,7 @@ const submitEnquiry = async (req, res, next) => {
     const id = 'enq-' + crypto.randomUUID();
     const now = new Date().toISOString();
 
-    await dbRun(
+    await db.dbRun(
       `INSERT INTO enquiries (
         id, fullName, email, phone, serviceCategory, subject, message, preferredContactMethod, status, createdAt, updatedAt
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -76,7 +76,7 @@ const getAllEnquiries = async (req, res, next) => {
 
     sql += ' ORDER BY createdAt DESC';
 
-    const enquiries = await dbAll(sql, params);
+    const enquiries = await db.dbAll(sql, params);
     res.json({ success: true, count: enquiries.length, enquiries });
   } catch (error) {
     next(error);
@@ -97,13 +97,17 @@ const updateEnquiryStatus = async (req, res, next) => {
       });
     }
 
-    const enquiry = await dbGet('SELECT * FROM enquiries WHERE id = ?', [id]);
+    const enquiry = await db.dbGet('SELECT * FROM enquiries WHERE id = ?', [id]);
     if (!enquiry) {
       return res.status(404).json({ success: false, message: 'Enquiry not found' });
     }
 
     const now = new Date().toISOString();
-    await dbRun('UPDATE enquiries SET status = ?, updatedAt = ? WHERE id = ?', [status, now, id]);
+    await db.dbRun('UPDATE enquiries SET status = ?, updatedAt = ? WHERE id = ?', [
+      status,
+      now,
+      id
+    ]);
 
     res.json({
       success: true,
