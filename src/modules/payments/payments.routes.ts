@@ -47,6 +47,28 @@ import * as orderService from '../orders/orders.service';
 
 export const paymentRoutes = Router();
 
+/**
+ * `"Alex Taylor"` becomes `{ first: 'Alex', last: 'Taylor' }`.
+ *
+ * Stripe collects a cardholder's name as one string; `tbl_payment` has `fname`
+ * and `lname`. The last whitespace-separated word is taken as the surname and
+ * everything before it as the given names — wrong for some names, right for
+ * most, and the same split the old application's own forms produce.
+ *
+ * A single word becomes the first name with no surname rather than the other way
+ * round, so a receipt reads "Madonna" and not ", Madonna".
+ */
+const splitName = (
+  value: string | null | undefined
+): { first: string | null; last: string | null } => {
+  const parts = clean(value)?.split(/\s+/).filter(Boolean) ?? [];
+
+  if (parts.length === 0) return { first: null, last: null };
+  if (parts.length === 1) return { first: parts[0] ?? null, last: null };
+
+  return { first: parts.slice(0, -1).join(' '), last: parts.at(-1) ?? null };
+};
+
 const recordSchema = z.object({
   /** Stripe's payment intent or session id. The idempotency key. */
   transactionId: z.string().trim().min(1, 'A transaction id is required').max(255),
@@ -123,12 +145,18 @@ paymentRoutes.post(
       ? await UserClient.findByPk(resolved.clientId)
       : null;
 
+    const payerName = splitName(body.payer?.name);
+
     const payment = await Payment.create({
       client_id: resolved.clientId,
       order_no: Number.isSafeInteger(orderNo) ? orderNo : null,
       date_paid: body.paidAt ? toLegacyDateTime(new Date(body.paidAt)) : toLegacyDateTime(),
-      fname: clean(body.payer?.name) ?? clean(client?.fname),
-      lname: clean(client?.lname),
+      // Split rather than dropped whole into `fname`. Stripe sends one `name`
+      // and this table has two columns, so writing the full name into `fname`
+      // while `lname` still came from the account read back on the receipt as
+      // "Alex Taylor Taylor".
+      fname: payerName.first ?? clean(client?.fname),
+      lname: payerName.last ?? clean(client?.lname),
       email: clean(body.payer?.email) ?? clean(client?.email),
       phone: clean(body.payer?.phone) ?? clean(client?.phone),
       total_order_price: centsToNumber(body.amountCents),

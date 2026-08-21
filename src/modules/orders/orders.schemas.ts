@@ -87,6 +87,18 @@ export const clearanceOrderSchema = z.object({
   departureDate: dateField.optional().nullable(),
   courierOptionId: optionalId,
   returnAddress: returnAddressSchema.optional(),
+
+  /**
+   * The answers with no column of their own, as prepared text.
+   *
+   * Why a clearance needs one: the wizard collects a purpose and a free-text
+   * note, and the only column either could reach was `additional_comment` on the
+   * return-address row — so on an order where the client did not give a return
+   * address, both were dropped. `tbl_order_notes` is the schema's own place for
+   * what an order says in words, and it does not depend on there being an address
+   * to hang it off.
+   */
+  notes: z.string().trim().max(4000).optional().nullable(),
 });
 
 export const clearanceQuoteSchema = z.object({
@@ -163,6 +175,30 @@ export const legalisationOrderSchema = z.object({
   applicants: z.array(applicantSchema).max(20).optional(),
   returnAddress: returnAddressSchema.optional(),
   courierOptionId: optionalId,
+
+  /**
+   * The client's own reference and their commercial invoice number.
+   *
+   * Both have a column of their own — `ref_no` and `com_invoice_no` on
+   * `tbl_document_legalization_order_details` — and both were being collected by
+   * the website's form and then dropped on the way in. A commercial invoice
+   * number in particular is what an export order is matched against at the other
+   * end, so losing it is losing the thread of the job.
+   */
+  clientReference: z.string().trim().max(220).optional().nullable(),
+  commercialInvoiceNumber: z.string().trim().max(220).optional().nullable(),
+
+  /**
+   * Everything the client answered that no column can hold.
+   *
+   * The attestation form asks which services are wanted, which pathway, how the
+   * documents are being delivered, when they are needed by and whether the
+   * originals are coming to the office. None of that has a column in the
+   * legalisation tables, and all of it is what a consultant needs in order to
+   * quote — so it arrives as prepared text and is written to `tbl_order_notes`,
+   * which is the schema's own place for what an order says in words.
+   */
+  notes: z.string().trim().max(4000).optional().nullable(),
 });
 
 // ---------------------------------------------------------------------------

@@ -209,10 +209,12 @@ orderRoutes.use('/drafts', draftRoutes);
 /**
  * The client an order belongs to.
  *
- * Null for a guest checkout, which the website supports — the clearance and
- * voucher journeys can be completed without an account. The order still records
- * a contact email, so it is traceable; it simply has no `client_id` and will not
- * appear in anyone's portal until CLS links it.
+ * Null for a guest checkout, which the website supports — the clearance,
+ * voucher and attestation journeys can all be completed without an account.
+ * Null here is not the last word on ownership: `orders.lodge` then looks for an
+ * enabled account whose email is the one given as the order's contact, so a
+ * client who ordered before signing in still finds the order in their portal.
+ * See `ownerFor` there for why the contact address is a sound link to make.
  *
  * Populated by `authenticateOptional`, applied to the lodgement routes below.
  * That middleware is what makes the distinction work: a signed-in client's order

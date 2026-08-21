@@ -5,11 +5,13 @@ import {
   ClsOrderDestinations,
   DocumentLegalizationDocuments,
   DocumentLegalizationOrderDetails,
+  OrderNotes,
   OrderReturnDocumentDetails,
   OrderTravellerDetails,
   PoliceClearanceOrderDetails,
   RussianVisaVoucherOrderDetails,
 } from '../../models';
+import { findClientByEmail } from '../auth/auth.repository';
 import { dateOnlyForWrite, toLegacyDateTime } from '../../shared/dates';
 import { centsToLegacyString } from '../../shared/money';
 import { clean } from '../../shared/text';
@@ -123,6 +125,42 @@ interface OrderHeaderInput {
 }
 
 /**
+ * The account an order belongs to.
+ *
+ * `input.clientId` when the client was signed in, and that is the end of it.
+ * When it is null the order came through a guest checkout — the clearance,
+ * voucher and attestation journeys are all open to visitors — and this looks for
+ * an enabled account whose email is the one the client typed into the order's own
+ * contact field. If there is one, the order is attached to it.
+ *
+ * **Why this is the right link to make.** Without it a guest order is invisible
+ * for good: `client_id` stays null, the portal filters on `client_id`, and a
+ * client who ordered before signing in is told they have no orders. The contact
+ * email is not a guess at who they are — it is the address they gave as the
+ * order's contact, the address the confirmation is sent to, and the address the
+ * public tracking screen already authorises on. So the account holder can
+ * already read this order in their inbox; showing it in their portal discloses
+ * nothing new.
+ *
+ * A miss leaves `client_id` null, which is still a real order: it has a contact
+ * address, it appears in CLS's own screens, and a consultant can link it.
+ */
+const ownerFor = async (input: OrderHeaderInput): Promise<number | null> => {
+  if (input.clientId !== null) return input.clientId;
+
+  const matched = await findClientByEmail(input.contact.email);
+
+  if (!matched) return null;
+
+  logger.info('Guest order linked to an account by its contact email', {
+    clientId: matched.id,
+    orderType: input.orderType,
+  });
+
+  return matched.id;
+};
+
+/**
  * Creates the `tbl_cls_order` row and gives it its reference.
  *
  * `status` is `PENDING` and `payment_status` is `FAILED` (which is this schema's
@@ -138,7 +176,7 @@ const createHeader = async (
 
   const order = await ClsOrder.create(
     {
-      client_id: input.clientId,
+      client_id: await ownerFor(input),
       order_type: input.orderType,
       destination: input.destinationCountryId ?? null,
       departure_date: dateOnlyForWrite(input.departureDate),
@@ -246,6 +284,47 @@ const createReturnAddress = async (
   );
 };
 
+/**
+ * Writes what the order says in words to `tbl_order_notes`.
+ *
+ * **Outside the transaction, and that is not an oversight.** `tbl_order_notes`
+ * is MyISAM, so it cannot join one — a rollback would leave the note behind. It
+ * is written after the commit instead, and a failure is logged rather than
+ * raised: the order itself is already safely stored, and losing the order
+ * because the note table was unavailable would be the worse trade.
+ *
+ * `order_no` is the order's id. That column is an int and a `tbl_cls_order`
+ * reference is TEXT, so the id is the only value the two families' notes can
+ * share — and it is already what `orders.service` reads notes back by.
+ *
+ * Not marked `is_admin`: this is the client's own account of their order, so
+ * they see it on the order in their portal alongside the consultant's replies.
+ */
+const recordOrderNote = async (
+  orderId: number,
+  note: string | null | undefined
+): Promise<void> => {
+  const body = clean(note);
+  if (!body) return;
+
+  try {
+    await OrderNotes.create({
+      order_no: orderId,
+      note: body,
+      date_added: toLegacyDateTime(),
+      note_by_name: 'Website order form',
+      user_type: 'client',
+      is_admin: 0,
+      is_deleted: 0,
+    });
+  } catch (error) {
+    logger.error('Order lodged but its note could not be written', {
+      orderId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 export interface LodgedOrder {
   reference: string;
   orderId: number;
@@ -280,6 +359,8 @@ export interface ClearanceOrderInput {
   departureDate?: string | null;
   courierOptionId?: number | null;
   returnAddress?: ReturnAddressInput;
+  /** The answers with no column of their own. Written to `tbl_order_notes`. */
+  notes?: string | null;
 }
 
 export const lodgeClearanceOrder = async (
@@ -331,6 +412,10 @@ export const lodgeClearanceOrder = async (
     await createReturnAddress(order.id, input.returnAddress, transaction);
 
     return finish(order, quote);
+  }).then(async (lodged) => {
+    // After the commit: see `recordOrderNote` for why this cannot be inside it.
+    await recordOrderNote(lodged.orderId, input.notes);
+    return lodged;
   });
 };
 
@@ -452,6 +537,12 @@ export interface LegalisationOrderInput {
   applicants?: readonly ApplicantInput[];
   returnAddress?: ReturnAddressInput;
   courierOptionId?: number | null;
+  /** The client's own reference for the job. `ref_no` on the detail row. */
+  clientReference?: string | null;
+  /** `com_invoice_no`, which an export order is matched against downstream. */
+  commercialInvoiceNumber?: string | null;
+  /** The answers with no column of their own. Written to `tbl_order_notes`. */
+  notes?: string | null;
 }
 
 /**
@@ -486,6 +577,8 @@ export const lodgeLegalisationOrder = async (
         order_id: order.id,
         destination: input.destinationCountryId ?? null,
         nationality: input.nationalityCountryId ?? null,
+        ref_no: clean(input.clientReference),
+        com_invoice_no: clean(input.commercialInvoiceNumber),
         status: 0,
       },
       { transaction }
@@ -513,6 +606,10 @@ export const lodgeLegalisationOrder = async (
     await createReturnAddress(order.id, input.returnAddress, transaction);
 
     return finish(order, quote);
+  }).then(async (lodged) => {
+    // After the commit: see `recordOrderNote` for why this cannot be inside it.
+    await recordOrderNote(lodged.orderId, input.notes);
+    return lodged;
   });
 };
 
