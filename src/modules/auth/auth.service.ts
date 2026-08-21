@@ -1,0 +1,397 @@
+import crypto from 'node:crypto';
+import jwt from 'jsonwebtoken';
+import { env } from '../../config/env';
+import { badRequest, conflict, unauthorized } from '../../shared/errors';
+import { logger } from '../../shared/logger';
+import {
+  hashPassword,
+  newResetPin,
+  shouldRehash,
+  verifyPassword,
+} from '../../shared/passwords';
+import { clean, fullName, normaliseEmail } from '../../shared/text';
+import {
+  accessTokenSeconds,
+  issueAccessToken,
+  issueRefreshToken,
+  verifyRefreshToken,
+  type Audience,
+} from '../../shared/tokens';
+import { CLIENT_TYPE } from '../../domain/codes';
+import type { UserAdmin, UserClient } from '../../models';
+import * as repository from './auth.repository';
+
+/**
+ * The rules around signing in.
+ *
+ * Separated from the queries because the rules are the interesting part — "a
+ * disabled account cannot sign in", "a wrong password and an unknown address
+ * give the same answer" — and those read badly with SQL in between them.
+ *
+ * ## What the schema does not give us
+ *
+ * There is no session table, no refresh-token table and no `password_reset`
+ * table anywhere in these ninety-four tables, and the schema is fixed. Three
+ * consequences, each handled rather than ignored:
+ *
+ * - **Sessions are stateless.** Nothing to delete on sign-out, so `logout` is
+ *   the website discarding its cookie. Access tokens are short (an hour) so the
+ *   window a stolen one is useful for is small.
+ * - **Reset tokens carry their own expiry.** `reset_pin` is `char(10)` with no
+ *   expiry column beside it. So the pin goes in the column and the client
+ *   receives a signed token that *contains* the pin and an expiry — the column
+ *   proves the pin is still current, the signature proves it has not been
+ *   tampered with, and the `exp` claim provides the timeout the column cannot.
+ * - **Ten characters is not much entropy.** Hence the hard rate limit on the
+ *   reset endpoints, and the short expiry. Both are in place because the column
+ *   width is not negotiable.
+ */
+
+export interface SignedInUser {
+  id: number;
+  audience: Audience;
+  email: string | null;
+  name: string | null;
+  clientType: string | null;
+  company: string | null;
+  accountNumber: string | null;
+}
+
+export interface Session {
+  accessToken: string;
+  refreshToken: string;
+  /** Seconds until the access token expires, so the caller can refresh early. */
+  expiresIn: number;
+  user: SignedInUser;
+}
+
+const clientToUser = (row: UserClient): SignedInUser => ({
+  id: row.id,
+  audience: 'client',
+  email: clean(row.email),
+  name: fullName(row.fname, row.lname),
+  clientType: clean(row.type) ?? CLIENT_TYPE.PUBLIC,
+  company: clean(row.company),
+  accountNumber: clean(row.display_id) ?? clean(row.account_no),
+});
+
+const adminToUser = (row: UserAdmin): SignedInUser => ({
+  id: row.id,
+  audience: 'admin',
+  email: clean(row.email),
+  name: fullName(row.fname, row.lname),
+  clientType: null,
+  company: 'Capital Link Services',
+  accountNumber: null,
+});
+
+const startSession = (user: SignedInUser): Session => {
+  const sid = crypto.randomUUID();
+
+  return {
+    accessToken: issueAccessToken({
+      sub: user.id,
+      aud: user.audience,
+      email: user.email,
+      clientType: user.clientType,
+      sid,
+    }),
+    refreshToken: issueRefreshToken({ sub: user.id, aud: user.audience, sid }),
+    expiresIn: accessTokenSeconds(),
+    user,
+  };
+};
+
+/**
+ * Bookkeeping that must never fail a sign-in.
+ *
+ * `last_login` and a password upgrade are both nice to have. In read-only mode
+ * they are refused outright, and even with writes on, a failure here means the
+ * client still signed in successfully — so the error is logged and swallowed.
+ */
+const recordSuccessfulSignIn = async (
+  user: SignedInUser,
+  rehashTo: string | null
+): Promise<void> => {
+  try {
+    if (user.audience === 'client') {
+      if (rehashTo) await repository.setClientPassword(user.id, rehashTo);
+      await repository.stampClientLogin(user.id);
+    } else {
+      await repository.stampAdminLogin(user.id);
+    }
+  } catch (error) {
+    logger.warn('Could not record sign-in bookkeeping', {
+      userId: user.id,
+      audience: user.audience,
+      readOnly: env.database.readOnly,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+/**
+ * Email and password to a session.
+ *
+ * One message for every failure — unknown address, wrong password, disabled
+ * account. Telling them apart is an account-enumeration oracle: an attacker with
+ * a list of addresses learns which ones are CLS clients, which is itself worth
+ * something.
+ *
+ * The password is verified even when no account was found, against a throwaway
+ * hash. Skipping that returns "no such user" measurably faster than "wrong
+ * password", which reintroduces exactly the oracle the shared message removes.
+ */
+export const signIn = async (
+  email: string,
+  password: string
+): Promise<Session> => {
+  const normalised = normaliseEmail(email);
+
+  if (!normalised) throw unauthorized('Check your email address and password.');
+
+  const client = await repository.findClientByEmail(normalised);
+  const admin = client ? null : await repository.findAdminByEmail(normalised);
+  const row = client ?? admin;
+
+  const result = await verifyPassword(
+    password,
+    row?.password ??
+      // A bcrypt hash of a random string: never matches, costs the same to check.
+      '$2b$12$0000000000000000000000000000000000000000000000000000'
+  );
+
+  if (!row || !result.valid) {
+    logger.info('Sign-in refused', { email: normalised, found: Boolean(row) });
+    throw unauthorized('Check your email address and password.');
+  }
+
+  const user = client ? clientToUser(client) : adminToUser(admin as UserAdmin);
+
+  const rehashTo = shouldRehash(result) ? await hashPassword(password) : null;
+  await recordSuccessfulSignIn(user, rehashTo);
+
+  logger.info('Signed in', {
+    userId: user.id,
+    audience: user.audience,
+    hashAlgorithm: result.algorithm,
+  });
+
+  return startSession(user);
+};
+
+/**
+ * A refresh token to a fresh session.
+ *
+ * The account is re-read rather than trusted from the token. A client suspended
+ * since the token was issued must stop being able to refresh, and the token
+ * itself cannot know that — it was signed before the change.
+ */
+export const refreshSession = async (refreshToken: string): Promise<Session> => {
+  const claims = verifyRefreshToken(refreshToken);
+
+  const user =
+    claims.aud === 'admin'
+      ? await repository.findAdminById(claims.sub).then((row) =>
+          row ? adminToUser(row) : null
+        )
+      : await repository.findClientById(claims.sub).then((row) =>
+          row ? clientToUser(row) : null
+        );
+
+  if (!user) throw unauthorized('Your session has ended. Please sign in again.');
+
+  return startSession(user);
+};
+
+export interface RegistrationInput {
+  firstName: string;
+  lastName: string;
+  email: string;
+  password: string;
+  title?: string | null;
+  phone?: string | null;
+  mobile?: string | null;
+  company?: string | null;
+  clientType?: string | null;
+}
+
+/**
+ * Creates a client account and signs them straight in.
+ *
+ * `tbl_user_client.email` has no unique index, so uniqueness is checked here
+ * rather than caught from a constraint violation. That check is not atomic —
+ * two simultaneous registrations for the same address can both pass it — and
+ * there is no way to make it atomic without adding an index, which would be
+ * DDL. The duplicate is survivable: sign-in orders by id and always resolves to
+ * the same row.
+ */
+export const register = async (input: RegistrationInput): Promise<Session> => {
+  const email = normaliseEmail(input.email);
+  if (!email) throw badRequest('Enter a valid email address.');
+
+  const existing = await repository.findAnyClientByEmail(email);
+  if (existing) {
+    throw conflict('That email address is already registered. Try signing in.');
+  }
+
+  const [passwordHash, displayId] = await Promise.all([
+    hashPassword(input.password),
+    repository.nextDisplayId(),
+  ]);
+
+  const created = await repository.createClient({
+    type: clean(input.clientType) ?? CLIENT_TYPE.PUBLIC,
+    title: clean(input.title),
+    fname: input.firstName.trim(),
+    lname: input.lastName.trim(),
+    email,
+    password: passwordHash,
+    phone: clean(input.phone),
+    mobile: clean(input.mobile),
+    company: clean(input.company),
+    displayId,
+    activationCode: crypto.randomBytes(16).toString('hex'),
+  });
+
+  logger.info('Client registered', { userId: created.id, displayId });
+
+  return startSession(clientToUser(created));
+};
+
+/** Whether an address can still be registered, for the live check on the form. */
+export const isEmailAvailable = async (email: string): Promise<boolean> => {
+  const normalised = normaliseEmail(email);
+  if (!normalised) return false;
+
+  const existing = await repository.findAnyClientByEmail(normalised);
+  return existing === null;
+};
+
+interface ResetTokenClaims {
+  sub: number;
+  pin: string;
+  purpose: 'password-reset';
+}
+
+/**
+ * Starts a password reset.
+ *
+ * Always resolves, whether the address exists or not, and the caller always
+ * sends the same response. The returned token is null for an unknown address —
+ * the endpoint then has nothing to email, and the client sees the same "if that
+ * address is registered, a link is on its way" either way.
+ */
+export const beginPasswordReset = async (
+  email: string
+): Promise<{ token: string; email: string; name: string | null } | null> => {
+  const normalised = normaliseEmail(email);
+  if (!normalised) return null;
+
+  const client = await repository.findClientByEmail(normalised);
+  if (!client) {
+    logger.info('Password reset requested for an unknown address', {
+      email: normalised,
+    });
+    return null;
+  }
+
+  const pin = newResetPin();
+  await repository.setClientResetPin(client.id, pin);
+
+  // The expiry lives in the token because the column has nowhere to put it.
+  const token = jwt.sign(
+    { sub: client.id, pin, purpose: 'password-reset' } satisfies ResetTokenClaims,
+    env.auth.accessSecret,
+    { expiresIn: '1h', issuer: 'cls-api' }
+  );
+
+  logger.info('Password reset issued', { userId: client.id });
+
+  return { token, email: normalised, name: fullName(client.fname, client.lname) };
+};
+
+/**
+ * Completes a password reset.
+ *
+ * Three things have to hold: the token verifies, it has not expired, and the pin
+ * it carries still matches the column. The last is what makes a token
+ * single-use — completing a reset clears `reset_pin`, so replaying the same
+ * token afterwards finds nothing to match.
+ */
+export const completePasswordReset = async (
+  token: string,
+  newPassword: string
+): Promise<void> => {
+  let claims: ResetTokenClaims;
+
+  try {
+    claims = jwt.verify(token, env.auth.accessSecret, {
+      issuer: 'cls-api',
+    }) as unknown as ResetTokenClaims;
+  } catch {
+    throw badRequest('That reset link has expired. Please request a new one.');
+  }
+
+  if (claims.purpose !== 'password-reset') {
+    throw badRequest('That reset link is not valid.');
+  }
+
+  const client = await repository.findClientById(claims.sub);
+
+  if (!client || !client.reset_pin || client.reset_pin !== claims.pin) {
+    throw badRequest('That reset link has already been used or has expired.');
+  }
+
+  await repository.setClientPassword(client.id, await hashPassword(newPassword));
+
+  logger.info('Password reset completed', { userId: client.id });
+};
+
+/**
+ * Changes a password from inside the portal.
+ *
+ * The current password is required even though the caller is already
+ * authenticated. An access token on a shared machine should not be enough to
+ * lock the real owner out of their account.
+ */
+export const changePassword = async (
+  userId: number,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> => {
+  const client = await repository.findClientById(userId);
+  if (!client) throw unauthorized();
+
+  const result = await verifyPassword(currentPassword, client.password);
+  if (!result.valid) throw badRequest('That is not your current password.');
+
+  await repository.setClientPassword(userId, await hashPassword(newPassword));
+
+  logger.info('Password changed', { userId });
+};
+
+/** Confirms an email address using the code stored at registration. */
+export const verifyEmail = async (code: string): Promise<void> => {
+  const client = await repository.findClientByActivationCode(code);
+  if (!client) throw badRequest('That confirmation link is not valid.');
+
+  await repository.activateClient(client.id);
+  logger.info('Email verified', { userId: client.id });
+};
+
+/** The signed-in user, re-read from the database rather than from the token. */
+export const currentUser = async (
+  id: number,
+  audience: Audience
+): Promise<SignedInUser> => {
+  if (audience === 'admin') {
+    const admin = await repository.findAdminById(id);
+    if (!admin) throw unauthorized();
+    return adminToUser(admin);
+  }
+
+  const client = await repository.findClientById(id);
+  if (!client) throw unauthorized();
+  return clientToUser(client);
+};

@@ -1,16 +1,24 @@
+/** @type {import('jest').Config} */
 module.exports = {
+  preset: 'ts-jest',
   testEnvironment: 'node',
-  testMatch: ['**/tests/**/*.test.js'],
-  collectCoverage: true,
-  coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'lcov', 'clover', 'html'],
+  roots: ['<rootDir>/src', '<rootDir>/tests'],
+  testMatch: ['**/*.test.ts'],
+  setupFiles: ['<rootDir>/tests/setupEnv.ts'],
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+  },
+  transform: {
+    '^.+\.ts$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
+  },
   collectCoverageFrom: [
-    'controllers/**/*.js',
-    'routes/**/*.js',
-    'middleware/**/*.js',
-    'config/**/*.js',
-    '!**/node_modules/**'
+    'src/**/*.ts',
+    '!src/server.ts',
+    '!src/config/swagger.ts',
+    '!src/models/**',
+    '!src/types/**',
   ],
-  verbose: true,
-  forceExit: true
+  coverageReporters: ['text', 'lcov', 'html'],
+  clearMocks: true,
+  restoreMocks: true,
 };
