@@ -1,4 +1,4 @@
-import { Op } from 'sequelize';
+import { Op, type Transaction } from 'sequelize';
 import { UserAdmin, UserClient } from '../../models';
 import { toLegacyDate, toLegacyDateTime } from '../../shared/dates';
 import { normaliseEmail } from '../../shared/text';
@@ -123,7 +123,18 @@ export interface NewClient {
  * screens use it to mark an address a consultant has checked, and a new account
  * has not had one checked.
  */
-export const createClient = (input: NewClient): Promise<UserClient> =>
+export const createClient = (
+  input: NewClient,
+  /**
+   * The transaction to enlist in, where the caller has one.
+   *
+   * Optional because registration has nothing else to write and so has no
+   * transaction to offer. `orders.claim` does: it creates the account *and*
+   * stamps the order's `client_id`, and an account left behind by a failed
+   * stamp would be a login the client was never told about.
+   */
+  transaction?: Transaction
+): Promise<UserClient> =>
   UserClient.create({
     type: input.type,
     display_id: input.displayId,
@@ -139,7 +150,7 @@ export const createClient = (input: NewClient): Promise<UserClient> =>
     s_enabled: ENABLED,
     s_archive: 0,
     last_login: null,
-  });
+  }, transaction ? { transaction } : {});
 
 /**
  * Replaces a stored password hash.

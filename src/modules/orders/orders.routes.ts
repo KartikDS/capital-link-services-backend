@@ -6,6 +6,7 @@ import {
   currentUserId,
 } from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
+import { internalOnly } from '../../middleware/requestContext';
 import { manyFiles } from '../../middleware/upload';
 import { badRequest, notFound } from '../../shared/errors';
 import { created, ok, paged } from '../../shared/http/responses';
@@ -18,10 +19,19 @@ import {
   quoteVoucher,
   type VoucherTier,
 } from '../../domain/quotes';
+import * as claimService from './orders.claim';
+import * as confirmations from './orders.confirmations';
 import * as lodge from './orders.lodge';
 import * as schemas from './orders.schemas';
 import * as service from './orders.service';
-import { attachDocuments, cancelOrder, readDraft, saveDraft, discardDraft } from './orders.writes';
+import {
+  addClientComment,
+  attachDocuments,
+  cancelOrder,
+  readDraft,
+  saveDraft,
+  discardDraft,
+} from './orders.writes';
 
 /**
  * Order endpoints: lodging, tracking, reading and attaching to.
@@ -312,6 +322,145 @@ orderRoutes.post(
 );
 
 // ---------------------------------------------------------------------------
+// Confirmations held until payment
+// ---------------------------------------------------------------------------
+
+/**
+ * An order that has not been paid for is not confirmed, so nothing is sent about
+ * it. But the confirmation can only be *rendered* at checkout — the order tables
+ * fold half of what the client's template prints into free text — so the website
+ * renders it there, parks it here, and posts it when the payment lands.
+ *
+ * Both endpoints are internal-only. The parked body is the client's whole
+ * application: their name, their passport numbers, their return address.
+ */
+
+const parkSchema = z.object({
+  reference: z.string().trim().min(1, 'An order reference is required').max(64),
+  content: z.object({
+    subject: z.string().min(1).max(998),
+    html: z.string().min(1).max(1_000_000),
+    text: z.string().min(1).max(1_000_000),
+  }),
+  /** Null when the client gave no address anywhere in the order. */
+  recipient: z.string().trim().max(320).nullable().optional(),
+});
+
+const referenceSchema = z.object({
+  reference: z.string().trim().min(1, 'An order reference is required').max(64),
+});
+
+/**
+ * POST /api/orders/confirmation/park
+ *
+ * Holds a rendered confirmation against an unpaid order. Overwrites any previous
+ * one for the same reference — a client who restarts a checkout should have the
+ * newer confirmation sent, not the abandoned one.
+ */
+orderRoutes.post(
+  '/confirmation/park',
+  internalOnly,
+  validate(parkSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof parkSchema>;
+
+    const parked = await confirmations.park(body.reference, {
+      content: body.content,
+      recipient: body.recipient ?? null,
+    });
+
+    ok(res, { parked });
+  }
+);
+
+/**
+ * POST /api/orders/confirmation/take
+ *
+ * Hands back an order's parked confirmation, **once**, and deletes it.
+ *
+ * A second caller gets `confirmation: null`, and so does an order that was never
+ * parked or whose confirmation has been swept. That is not an error and must not
+ * be treated as one: the webhook and the success page both ask, every time, and
+ * exactly one of them is meant to get it.
+ */
+orderRoutes.post(
+  '/confirmation/take',
+  internalOnly,
+  validate(referenceSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof referenceSchema>;
+
+    ok(res, { confirmation: await confirmations.take(body.reference) });
+  }
+);
+
+/**
+ * POST /api/orders/confirmation/discard
+ *
+ * Throws a parked confirmation away unsent, for a checkout that failed after the
+ * order was lodged. Nothing was charged, so there is nothing to confirm — and the
+ * client's details should not sit on disk until the sweep notices.
+ */
+orderRoutes.post(
+  '/confirmation/discard',
+  internalOnly,
+  validate(referenceSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof referenceSchema>;
+
+    await confirmations.discard(body.reference);
+
+    ok(res, { discarded: true });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Claiming a guest order
+// ---------------------------------------------------------------------------
+
+const claimSchema = z.object({
+  reference: z.string().trim().min(1, 'An order reference is required').max(64),
+});
+
+/**
+ * POST /api/orders/claim
+ *
+ * Server-to-server. Attaches a guest order to a client account, opening one if
+ * the address is new, and returns the password when it did.
+ *
+ * ## Why this is internal-only, and why the reference is in the body
+ *
+ * **Internal**, because a success response can carry a plaintext password. There
+ * is no session that should ever be allowed to ask for one — the only legitimate
+ * caller is the website confirming a payment or an order, holding the shared
+ * secret. `/api/cls/[...path]` blocks the path as well, so a browser cannot reach
+ * it even by mistake.
+ *
+ * **The reference is in the body** rather than the path for the same reason: a
+ * fixed path is one entry in that proxy's blocklist, where `orders/:reference/claim`
+ * would need a pattern.
+ *
+ * ## Why a miss is a 200
+ *
+ * Every outcome that is not an outright failure comes back as a result the caller
+ * can read — including "no such order" and "no address on it". The callers are a
+ * Stripe webhook and an order confirmation: neither should retry, and neither
+ * should fail the payment it has just recorded, because an account could not be
+ * opened. Anything genuinely broken still throws and becomes a 5xx.
+ */
+orderRoutes.post(
+  '/claim',
+  internalOnly,
+  validate(claimSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof claimSchema>;
+    const result = await claimService.claim(body.reference);
+
+    ok(res, { claim: result });
+  }
+);
+
+// ---------------------------------------------------------------------------
 // A client's own orders
 // ---------------------------------------------------------------------------
 
@@ -417,6 +566,39 @@ referenceRoutes.get('/documents', async (req: Request, res: Response) => {
 referenceRoutes.get('/payments', async (req: Request, res: Response) => {
   ok(res, { payments: await service.payments(await resolveFromParams(req)) });
 });
+
+/**
+ * GET /api/orders/:reference/delivery
+ *
+ * Where the finished documents are going, as recorded on this order — not the
+ * account's own delivery address, which is a different fact. Null where the order
+ * records none, which is ordinary for anything issued electronically.
+ */
+referenceRoutes.get('/delivery', async (req: Request, res: Response) => {
+  ok(res, { delivery: await service.delivery(await resolveFromParams(req)) });
+});
+
+/**
+ * POST /api/orders/:reference/comments
+ *
+ * The client's own note on their order, written into the same `tbl_order_notes`
+ * log a consultant reads and replies in. Not marked internal, so the client sees
+ * it back — see `addClientComment` for why that flag matters.
+ */
+referenceRoutes.post(
+  '/comments',
+  validate(
+    z.object({
+      body: z.string().trim().min(1, 'Write something before posting it').max(4000),
+    })
+  ),
+  async (req: Request, res: Response) => {
+    const resolved = await resolveFromParams(req);
+    const { body } = req.body as { body: string };
+
+    created(res, await addClientComment(resolved, body, currentUserId(req)));
+  }
+);
 
 /**
  * POST /api/orders/:reference/documents

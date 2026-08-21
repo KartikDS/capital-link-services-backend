@@ -1,8 +1,13 @@
 import path from 'node:path';
-import { ClsOrder, ClsOrderDocuments, OrderNotes } from '../../models';
+import {
+  ClsOrder,
+  ClsOrderDocuments,
+  OrderNotes,
+  UserClient,
+} from '../../models';
 import { badRequest, conflict } from '../../shared/errors';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
-import { clean } from '../../shared/text';
+import { clean, fullName } from '../../shared/text';
 import { logger } from '../../shared/logger';
 import {
   CLS_ORDER_STATUS,
@@ -10,6 +15,7 @@ import {
   LEGACY_ORDER_STATUS,
   SERVICE_SLUG_TO_ORDER_TYPE,
 } from '../../domain/codes';
+import { toCommentView } from './orders.presenter';
 import type { ResolvedOrder } from './orders.service';
 
 /**
@@ -223,6 +229,95 @@ const recordNote = async (
       message: error instanceof Error ? error.message : String(error),
     });
   }
+};
+
+// ---------------------------------------------------------------------------
+// Client comments
+// ---------------------------------------------------------------------------
+
+/**
+ * A note the client wrote on their own order.
+ *
+ * ## Why this exists
+ *
+ * The portal could read a consultant's notes and not answer them. The order view
+ * screen has a comment box, and until now it appended to React state and lost the
+ * text on the next navigation — a client who typed "my travel date has moved"
+ * watched it appear on screen and reach nobody.
+ *
+ * ## What it is not
+ *
+ * Not a message thread. `tbl_order_notes` is a flat log CLS's own admin writes
+ * into, with `is_admin` deciding who may read a row — so a client's note lands in
+ * the same list a consultant reads and is answered there. There is no delivery
+ * receipt, no read state and no reply-to, because the table has columns for none
+ * of them.
+ *
+ * **`is_admin` is 0 and `user_type` is `client`, and both matter.** An internal
+ * note is filtered out of what a client may read (see
+ * `repository.listClientVisibleNotes`), so writing one as `is_admin: 1` would hide
+ * the client's own message from them. And `status` is deliberately left unset: it
+ * is the admin's triage column, and a client cannot decide their own order is
+ * 'Action required'.
+ */
+export const addClientComment = async (
+  resolved: ResolvedOrder,
+  body: string,
+  authorId: number
+): Promise<{ comment: ReturnType<typeof toCommentView> }> => {
+  const note = clean(body);
+
+  if (!note) {
+    throw badRequest('Write something before posting it.');
+  }
+
+  /**
+   * The reference this note is filed under.
+   *
+   * `tbl_order_notes.order_no` is an `int` and a `tbl_cls_order` reference is
+   * text, so the digits are the only key the two families' notes can share — the
+   * same rule `orders.service.comments` reads them back by. An order whose
+   * reference has no digits in it cannot be commented on, and that is refused
+   * rather than written somewhere it would never be found.
+   */
+  const reference =
+    resolved.family === 'cls'
+      ? (clean(resolved.row.order_no) ?? String(resolved.row.id))
+      : String(resolved.row.order_no);
+
+  const numeric =
+    resolved.family === 'legacy'
+      ? resolved.row.order_no
+      : Number.parseInt(/(\d+)$/.exec(reference)?.[1] ?? '', 10);
+
+  if (!Number.isSafeInteger(numeric)) {
+    throw badRequest(
+      'We cannot attach a comment to that order. Please email your consultant instead.'
+    );
+  }
+
+  const client = await UserClient.findByPk(authorId);
+
+  const row = await OrderNotes.create({
+    order_no: numeric,
+    note,
+    date_added: toLegacyDateTime(),
+    note_by: authorId,
+    // The name is stored alongside the id because `tbl_order_notes` has no join
+    // to a client, and the admin's own screens read this column.
+    note_by_name: fullName(client?.fname, client?.lname) ?? 'Client',
+    user_type: 'client',
+    is_admin: 0,
+    is_deleted: 0,
+  });
+
+  logger.info('Client comment added', {
+    orderNo: numeric,
+    noteId: row.id,
+    clientId: authorId,
+  });
+
+  return { comment: toCommentView(row, reference) };
 };
 
 // ---------------------------------------------------------------------------

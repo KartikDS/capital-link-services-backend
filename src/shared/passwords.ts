@@ -140,3 +140,76 @@ export const newToken = (): string => crypto.randomBytes(32).toString('base64url
 
 export const sha256 = (value: string): string =>
   crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+
+/**
+ * The alphabet a generated password is drawn from.
+ *
+ * Deliberately missing `0`, `O`, `o`, `1`, `l` and `I`. A password CLS emails to
+ * a client is one they will read off a screen and type — often from a phone,
+ * often into a different device — and the pairs above are the ones that get
+ * mistyped. Losing six characters costs about a third of a bit each and buys a
+ * password that can actually be transcribed.
+ *
+ * Punctuation is limited to a handful that survive being pasted into a form and
+ * quoted in an email body without being mangled or auto-linked.
+ */
+const GENERATED_ALPHABET =
+  'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+const GENERATED_SYMBOLS = '!?@#$%&*+=';
+
+/** Long enough that the reduced alphabet costs nothing: 56^14 ≈ 2^81. */
+const GENERATED_LENGTH = 14;
+
+/**
+ * An index into `alphabet`, drawn without modulo bias.
+ *
+ * `randomBytes(1)[0] % 56` is not uniform — the first 24 characters come up
+ * slightly more often than the rest, because 256 is not a multiple of 56. The
+ * loop rejects the tail of the byte range instead, which is the standard fix and
+ * costs an average of 1.1 bytes per character.
+ */
+const unbiasedIndex = (size: number): number => {
+  const limit = Math.floor(256 / size) * size;
+
+  for (;;) {
+    const byte = crypto.randomBytes(1)[0] as number;
+    if (byte < limit) return byte % size;
+  }
+};
+
+const pick = (alphabet: string): string =>
+  alphabet[unbiasedIndex(alphabet.length)] as string;
+
+/**
+ * A password for an account the client did not open themselves.
+ *
+ * Guest checkout creates accounts — see `modules/orders/orders.claim` — and
+ * those clients never chose a password, so one has to be made for them and
+ * emailed. It is generated here rather than at the call site so there is exactly
+ * one definition of what CLS considers a strong starting password.
+ *
+ * **The plaintext exists for the length of one request.** It is returned to the
+ * caller, which puts it in an email, and only the bcrypt hash is stored. Nothing
+ * writes it to a log, and the claim endpoint's response is the only place it
+ * appears — which is why that endpoint is internal-only.
+ *
+ * Guaranteed to contain a symbol and a digit, because a client whose employer
+ * enforces a password policy should not have to reset the one CLS just sent
+ * them. The guaranteed characters are placed at random positions rather than
+ * appended, so the shape of the password says nothing about how it was built.
+ */
+export const generatePassword = (): string => {
+  const characters: string[] = [pick(GENERATED_SYMBOLS), pick('23456789')];
+
+  while (characters.length < GENERATED_LENGTH) {
+    characters.push(pick(GENERATED_ALPHABET));
+  }
+
+  // Fisher-Yates, so the symbol and the digit are not always in front.
+  for (let i = characters.length - 1; i > 0; i -= 1) {
+    const j = unbiasedIndex(i + 1);
+    [characters[i], characters[j]] = [characters[j] as string, characters[i] as string];
+  }
+
+  return characters.join('');
+};

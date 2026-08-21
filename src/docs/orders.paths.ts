@@ -41,6 +41,9 @@ import { PAGING, body, f, okList, okObject, okRef, operation } from './shared';
  * between "checked" and "unchecked".
  */
 
+/** A literal newline for the markdown in these descriptions. */
+const NL = '\n';
+
 const tag = 'Orders';
 
 /** Every lodgement answers the same way. */
@@ -357,6 +360,174 @@ export const orderPaths = {
   },
 
   // -------------------------------------------------------------------------
+  // Claiming a guest order
+  // -------------------------------------------------------------------------
+
+  '/api/orders/claim': {
+    post: operation('/api/orders/claim', {
+      tag,
+      summary: 'Attach a guest order to an account (server-to-server)',
+      description:
+        'Called by the website once a guest order is paid, or once a quoted one is lodged. Finds the account the order belongs to and stamps `tbl_cls_order.client_id` — **creating the account** when nothing is registered for the order’s contact address.' +
+        NL +
+        NL +
+        'Without this, a guest order keeps `client_id` NULL forever and the portal, which filters on that column, never shows it — including to the same person after they register.' +
+        NL +
+        NL +
+        '**`password` is returned only when `created` is true**, in plaintext, exactly once. That is why the endpoint is guarded by `x-internal-secret` and why the website blocks the path in its own proxy: the caller emails it to the client and nothing stores it.' +
+        NL +
+        NL +
+        '**Idempotent.** A second call for the same reference finds the order already stamped and answers `created: false` with no password, so a Stripe redelivery — or the success page racing the webhook — cannot send two different passwords. The order row is locked for the duration, which is what makes two simultaneous callers safe.' +
+        NL +
+        NL +
+        'A reference that names no `tbl_cls_order` row, or an order with no contact address, answers **200** with a `reason` rather than an error: the caller has just recorded a payment and must not fail because an account could not be opened.',
+      auth: 'internal',
+      body: {
+        schema: body(
+          { reference: f.string('The order reference, e.g. `CLS-001482`.') },
+          ['reference']
+        ),
+      },
+      responses: {
+        200: okObject('The order’s account, whether found or created', {
+          claim: {
+            type: 'object',
+            properties: {
+              created: {
+                type: 'boolean',
+                description: 'An account was opened by this call. Only then is `password` set.',
+              },
+              linked: {
+                type: 'boolean',
+                description: 'This call attached the order to an account.',
+              },
+              clientId: f.id('The account the order now belongs to.'),
+              email: f.string('The account’s address.'),
+              firstName: f.string('For the greeting in the caller’s email.'),
+              password: f.string(
+                'The generated password, plaintext, present only on `created`. Email it; nothing stores it.'
+              ),
+              reason: f.string(
+                'Why nothing happened — `unknown-order` or `no-contact-email`. Absent when something did.'
+              ),
+            },
+          },
+        }),
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
+  // -------------------------------------------------------------------------
+  // Confirmations held until payment
+  // -------------------------------------------------------------------------
+
+  '/api/orders/confirmation/park': {
+    post: operation('/api/orders/confirmation/park', {
+      tag,
+      summary: 'Hold an order’s confirmation until it is paid for (server-to-server)',
+      description:
+        '**An order that has not been paid for is not confirmed, so nothing is sent about it** — not to the client, not to CLS.' +
+        NL +
+        NL +
+        'The awkward part is that the confirmation can only be *rendered* at checkout: the order tables fold the second entry dates, the lodgement post, the purpose and the passport dates into single free-text columns, so an email built later by reading the order back cannot print them as the rows the client’s template asks for. The whole application exists exactly once, in the request that placed it.' +
+        NL +
+        NL +
+        'So the website renders it there and parks it here, and `/take` releases it when the payment lands. Rendered early, sent late.' +
+        NL +
+        NL +
+        'Stored as one JSON file per unpaid order under `UPLOAD_DIR` — there is no table for it and adding one would be DDL. Parking again for the same reference **overwrites**, so a client who restarts a checkout gets the newer confirmation. Anything still unclaimed after two days is swept, which is longer than a Stripe session lives.',
+      auth: 'internal',
+      body: {
+        schema: body(
+          {
+            reference: f.string('The order reference, e.g. `CLS-001482`.'),
+            content: {
+              type: 'object',
+              required: ['subject', 'html', 'text'],
+              description: 'The rendered email.',
+              properties: {
+                subject: f.string(),
+                html: f.string(),
+                text: f.string(),
+              },
+            },
+            recipient: f.string(
+              'Where it goes when released. Null when the client gave no address — the sender copies CLS alone.'
+            ),
+          },
+          ['reference', 'content']
+        ),
+      },
+      responses: {
+        200: okObject('Held', {
+          parked: {
+            type: 'boolean',
+            description: 'False when the reference is not a usable filename.',
+          },
+        }),
+      },
+    }),
+  },
+
+  '/api/orders/confirmation/take': {
+    post: operation('/api/orders/confirmation/take', {
+      tag,
+      summary: 'Release a paid order’s confirmation, once (server-to-server)',
+      description:
+        'Hands back the parked confirmation and **deletes it**. Called once the payment is recorded.' +
+        NL +
+        NL +
+        '**Exactly one caller can win.** The spool file is renamed before it is read, and a rename either succeeds or finds nothing — so of the Stripe webhook and `/payment/success`, which both ask on every payment, one gets the email and the other gets `confirmation: null`. That is the ordinary outcome on one path every time and is not an error.' +
+        NL +
+        NL +
+        'Null also means: never parked, already swept, or a reference that is not a plausible filename. A caller cannot tell those apart and does not need to — in all of them there is nothing to send.',
+      auth: 'internal',
+      body: {
+        schema: body({ reference: f.string('The order reference.') }, ['reference']),
+      },
+      responses: {
+        200: okObject('The confirmation, or null if somebody else has it', {
+          confirmation: {
+            type: 'object',
+            nullable: true,
+            properties: {
+              content: {
+                type: 'object',
+                properties: {
+                  subject: f.string(),
+                  html: f.string(),
+                  text: f.string(),
+                },
+              },
+              recipient: f.string('Null when the order carried no address.'),
+            },
+          },
+        }),
+      },
+    }),
+  },
+
+  '/api/orders/confirmation/discard': {
+    post: operation('/api/orders/confirmation/discard', {
+      tag,
+      summary: 'Throw away an unsent confirmation (server-to-server)',
+      description:
+        'For a checkout that failed after the order was lodged — Stripe unreachable, a session that never opened. No payment can now arrive to release it, and the client’s details should not sit in the spool for two days waiting on something that cannot happen.' +
+        NL +
+        NL +
+        'The order itself is deliberately left in place: it is a real order the client placed and a consultant can invoice it.',
+      auth: 'internal',
+      body: {
+        schema: body({ reference: f.string('The order reference.') }, ['reference']),
+      },
+      responses: {
+        200: okObject('Discarded', { discarded: { type: 'boolean' } }),
+      },
+    }),
+  },
+
+  // -------------------------------------------------------------------------
   // Tracking and reading
   // -------------------------------------------------------------------------
 
@@ -485,6 +656,21 @@ export const orderPaths = {
         }),
       },
     }),
+
+    post: operation('/api/orders/{reference}/comments', {
+      tag,
+      summary: 'Add your own note to an order',
+      description:
+        'Writes into the same `tbl_order_notes` log a consultant reads, with `is_admin` 0 and `user_type` `client` — so the note is visible to the client who wrote it and answered in place.' + NL + NL + '**Not a message thread.** The table is a flat log with no read state, no reply-to and no delivery receipt, so none of those are reported. `status` is left unset on purpose: that is the admin’s triage column, and a client cannot decide their own order is action-required.' + NL + NL + 'Refused for an order whose reference carries no digits: `order_no` on the notes table is an `int`, so there would be no key to file the note under and it would be written where nobody could find it.',
+      auth: 'bearer',
+      responses: {
+        201: okObject('Posted', {
+          comment: { $ref: '#/components/schemas/Comment' },
+        }),
+        400: { description: 'Empty, or an order a note cannot be keyed to' },
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
   },
 
   '/api/orders/{reference}/documents': {
@@ -508,6 +694,41 @@ export const orderPaths = {
         413: { description: 'A file was larger than the configured limit' },
         415: { description: 'An extension that is not accepted' },
         503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
+  '/api/orders/{reference}/delivery': {
+    get: operation('/api/orders/{reference}/delivery', {
+      tag,
+      summary: 'Where this order’s documents are going',
+      description:
+        'The return address recorded on **this order**, not the account’s own delivery address — they are routinely different, and showing the profile here would tell a client their certificates are going somewhere they are not.' + NL + NL + 'A `tbl_cls_order` reads `tbl_order_return_document_details`; a legacy `tbl_orders` row reads its own `doc_delivery_*` columns, which have no state and no country, so those come back null rather than guessed.' + NL + NL + '`null` where the order records no return address, which is ordinary for anything issued electronically.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Delivery', {
+          delivery: {
+            nullable: true,
+            type: 'object',
+            properties: {
+              company: { type: 'string', nullable: true },
+              contactName: { type: 'string', nullable: true },
+              contactNumber: { type: 'string', nullable: true },
+              email: { type: 'string', nullable: true },
+              address: { type: 'string', nullable: true },
+              city: { type: 'string', nullable: true },
+              state: { type: 'string', nullable: true },
+              postcode: { type: 'string', nullable: true },
+              country: { type: 'string', nullable: true },
+              returningDate: {
+                type: 'string',
+                format: 'date-time',
+                nullable: true,
+              },
+              comment: { type: 'string', nullable: true },
+            },
+          },
+        }),
       },
     }),
   },

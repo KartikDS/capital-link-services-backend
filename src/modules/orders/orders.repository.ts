@@ -87,7 +87,7 @@ export const findClsOrderById = (id: number): Promise<ClsOrder | null> =>
  * that happens once per request, in exchange for a query that cannot break when
  * the include list changes.
  */
-const findClsOrderIdByReference = async (
+export const findClsOrderIdByReference = async (
   reference: string
 ): Promise<number | null> => {
   const trimmed = reference.trim();

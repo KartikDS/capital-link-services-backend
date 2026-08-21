@@ -339,6 +339,20 @@ export const components = {
       },
     },
 
+    Comment: {
+      type: 'object',
+      description:
+        'A note on an order, from `tbl_order_notes`. The same shape whether a consultant or the client wrote it — `authorRole` is what tells them apart, and a note a consultant marked internal is never returned at all.',
+      properties: {
+        id: { type: 'string' },
+        reference: { type: 'string' },
+        author: { type: 'string', nullable: true },
+        authorRole: { type: 'string', enum: ['Client', 'Consultant'] },
+        postedAt: { type: 'string', format: 'date-time', nullable: true },
+        body: { type: 'string' },
+      },
+    },
+
     Invoice: {
       type: 'object',
       description:

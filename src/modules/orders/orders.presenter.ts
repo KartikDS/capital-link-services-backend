@@ -52,6 +52,16 @@ import { toConsultantView, type ConsultantView } from '../../domain/company';
  * comes from the status plus whether any document is waiting on the client.
  */
 
+/** One of the four processing milestones, with the date it happened or null. */
+export interface OrderMilestoneView {
+  /** `received`, `submitted`, `completed`, `closed` — the admin's own names. */
+  id: string;
+  label: string;
+  /** ISO timestamp, or null where CLS has not stamped it yet. */
+  at: string | null;
+  reached: boolean;
+}
+
 export interface OrderView {
   reference: string;
   orderType: string | null;
@@ -65,6 +75,21 @@ export interface OrderView {
   statusLabel: string;
   progress: number;
   milestone: string | null;
+  /**
+   * All four milestones, reached or not.
+   *
+   * `progress` and `milestone` answer "how far along is this"; these answer "what
+   * are the four steps and which have happened". The order view screen draws the
+   * second question as a grid of four dated cards, and it cannot be derived from
+   * the timeline — that drops an undated milestone entirely, so a step not yet
+   * reached and a step that does not exist look identical there.
+   *
+   * Always four entries, in order, whatever the service. All three
+   * `*_order_details` tables carry the same four columns, and an order with no
+   * detail row at all gets four nulls rather than an empty list, because a screen
+   * showing three of four steps is worse than one showing four blanks.
+   */
+  milestones: readonly OrderMilestoneView[];
   eta: string | null;
   updated: string | null;
   submittedAt: string | null;
@@ -111,7 +136,17 @@ interface Milestones {
   progress: number;
   milestone: string | null;
   dates: readonly (string | null)[];
+  /** The same four dates, labelled, for the order view's status grid. */
+  slots: readonly OrderMilestoneView[];
 }
+
+/**
+ * The stable ids for the four milestone slots.
+ *
+ * The same words `PATCH /api/admin/orders/:id/milestone` takes, so a screen that
+ * reads a slot and a consultant who stamps one are naming the same thing.
+ */
+const MILESTONE_IDS = ['received', 'submitted', 'completed', 'closed'] as const;
 
 const readMilestones = (
   received: unknown,
@@ -134,6 +169,12 @@ const readMilestones = (
     // which the website renders as the status instead.
     milestone: reached > 0 ? (MILESTONE_LABELS[reached - 1] ?? null) : null,
     dates,
+    slots: dates.map((at, index) => ({
+      id: MILESTONE_IDS[index] ?? String(index),
+      label: MILESTONE_LABELS[index] ?? 'Progress',
+      at,
+      reached: at !== null,
+    })),
   };
 };
 
@@ -245,6 +286,7 @@ export const toOrderView = (
     statusLabel: CLS_STATUS_LABEL[status] ?? 'In progress',
     progress: milestones.progress,
     milestone: milestones.milestone,
+    milestones: milestones.slots,
     // No column records a promised ready date. See the note at the top.
     eta: null,
     updated: toIso(order.date_last_saved) ?? toIso(order.date_submitted),
@@ -330,6 +372,7 @@ export const toLegacyOrderView = (
     statusLabel: LEGACY_STATUS_LABEL[status] ?? 'Received',
     progress: milestones.progress,
     milestone: milestones.milestone,
+    milestones: milestones.slots,
     eta: null,
     updated: toIso(order.date_last_saved) ?? toIso(order.date_submitted),
     submittedAt: toIso(order.date_submitted),
@@ -361,7 +404,19 @@ export const toCommentView = (note: OrderNotes, reference: string) => ({
   id: String(note.id),
   reference,
   author: clean(note.note_by_name) ?? 'Capital Link Services',
-  authorRole: clean(note.user_type) ?? 'Consultant',
+  /**
+   * Which side wrote it, in two values only.
+   *
+   * `user_type` holds `client` or `admin` — the old application's own words, and
+   * not a desk despite what the website's type comment once claimed. It used to be
+   * passed through raw, which meant a client's own note came back as the lowercase
+   * `client` and every screen comparing against `'Client'` silently treated it as
+   * a consultant's. Now that clients can post notes, that comparison decides which
+   * side of the thread a message is drawn on, so the value is normalised here
+   * rather than at each of the three places that read it.
+   */
+  authorRole:
+    clean(note.user_type)?.toLowerCase() === 'client' ? 'Client' : 'Consultant',
   postedAt: toIso(note.date_added),
   body: clean(note.note) ?? '',
   // Only present when true. The website's type has it as `actionRequired?: true`,

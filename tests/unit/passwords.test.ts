@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import {
   detectAlgorithm,
+  generatePassword,
   hashPassword,
   newResetPin,
   verifyPassword,
@@ -123,5 +124,64 @@ describe('hashPassword', () => {
     expect(first).not.toBe(second);
     expect((await verifyPassword('same', first)).valid).toBe(true);
     expect((await verifyPassword('same', second)).valid).toBe(true);
+  });
+});
+
+/**
+ * The password CLS emails to a guest whose account it opened for them.
+ *
+ * Two competing requirements, and the tests below are the line between them: it
+ * has to be strong enough to be the only thing protecting a client's passport
+ * scans, and typable enough that somebody reading it off a phone gets it right
+ * first time.
+ */
+describe('generatePassword', () => {
+  it('is long enough that the reduced alphabet costs nothing', () => {
+    expect(generatePassword()).toHaveLength(14);
+  });
+
+  it('omits the characters that get mistyped when read off a screen', () => {
+    const sample = Array.from({ length: 200 }, generatePassword).join('');
+
+    // 0/O/o and 1/l/I. A client transcribing a password cannot tell them apart,
+    // and a wrong guess reads as "the password you sent me does not work".
+    expect(sample).not.toMatch(/[0O o1lI]/);
+  });
+
+  it('always carries a digit and a symbol', () => {
+    // So a client whose employer enforces a password policy does not have to
+    // reset the one CLS has just sent them.
+    for (let i = 0; i < 100; i += 1) {
+      const password = generatePassword();
+
+      expect(password).toMatch(/[23456789]/);
+      expect(password).toMatch(/[!?@#$%&*+=]/);
+    }
+  });
+
+  it('does not always put the symbol and the digit in the same place', () => {
+    // They are generated first and shuffled in. Without the shuffle every
+    // password would start "!7", which tells an attacker two positions.
+    const firstCharacters = new Set(
+      Array.from({ length: 100 }, () => generatePassword()[0])
+    );
+
+    expect(firstCharacters.size).toBeGreaterThan(5);
+  });
+
+  it('does not repeat', () => {
+    const passwords = new Set(Array.from({ length: 500 }, generatePassword));
+
+    expect(passwords.size).toBe(500);
+  });
+
+  it('produces something the sign-in path accepts', async () => {
+    const password = generatePassword();
+
+    // The round trip that matters: generated here, hashed into the row by the
+    // claim, and verified on sign-in by the same function the website calls.
+    expect((await verifyPassword(password, await hashPassword(password))).valid).toBe(
+      true
+    );
   });
 });

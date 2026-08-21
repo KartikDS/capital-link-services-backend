@@ -1,6 +1,7 @@
 import { notFound } from '../../shared/errors';
 import { toIso } from '../../shared/dates';
-import { clean } from '../../shared/text';
+import { clean, fullName } from '../../shared/text';
+import { Countries, OrderReturnDocumentDetails } from '../../models';
 import type { ClsOrder, Orders } from '../../models';
 import * as repository from './orders.repository';
 import {
@@ -292,6 +293,122 @@ export const payments = async (resolved: ResolvedOrder) => {
 
   const rows = await repository.listPayments(key);
   return rows.map(toPaymentView);
+};
+
+// ---------------------------------------------------------------------------
+// Where the documents are going
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the finished documents are going, as recorded on **this order**.
+ *
+ * ## Why this is not the client's profile address
+ *
+ * The account has a delivery address and so does every order, and they are
+ * routinely different: a client whose certificates go to their employer this
+ * month and to their home next month has one account and two orders. The order
+ * view screen shows the order's own address for that reason — reading the profile
+ * there would tell a client their documents are going somewhere they are not.
+ *
+ * ## What each family can answer
+ *
+ * A `tbl_cls_order` keeps it in `tbl_order_return_document_details`, one row per
+ * order, which is what the website's own order forms write. A legacy `tbl_orders`
+ * row keeps it in its own `doc_delivery_*` columns — the same facts under
+ * different names, read here so an old order does not show an empty panel. The
+ * legacy block has no state column and no country, so those come back null rather
+ * than guessed.
+ *
+ * Null when the order records no return address at all, which is ordinary: a
+ * Russian voucher is issued electronically and has nothing to courier.
+ */
+export interface DeliveryView {
+  company: string | null;
+  contactName: string | null;
+  contactNumber: string | null;
+  email: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  postcode: string | null;
+  /** The country's display name, resolved from `country_id`. */
+  country: string | null;
+  /** When CLS expects to send it back, if a consultant has set a date. */
+  returningDate: string | null;
+  /** The client's own delivery instructions — the one free-text column. */
+  comment: string | null;
+}
+
+/** True once any part of the address was actually recorded. */
+const hasAnyDetail = (view: DeliveryView): boolean =>
+  Object.values(view).some((value) => value !== null);
+
+const legacyDelivery = (row: Orders): DeliveryView | null => {
+  const view: DeliveryView = {
+    company: clean(row.doc_delivery_company),
+    contactName:
+      clean(row.doc_delivery_recipient_name) ??
+      clean(row.doc_delivery_primary_receipient_contact_name),
+    contactNumber:
+      clean(row.doc_delivery_contact_no) ??
+      clean(row.doc_delivery_primary_receipient_contact_no),
+    email:
+      clean(row.doc_delivery_email) ??
+      clean(row.doc_delivery_primary_receipient_email),
+    address: clean(row.doc_delivery_address),
+    city: clean(row.doc_delivery_city),
+    state: null,
+    postcode: clean(row.doc_delivery_postcode),
+    country: null,
+    returningDate: null,
+    comment: null,
+  };
+
+  // Every field empty means the row never carried a delivery address, which is a
+  // different answer from "here is a blank one".
+  return hasAnyDetail(view) ? view : null;
+};
+
+export const delivery = async (
+  resolved: ResolvedOrder
+): Promise<DeliveryView | null> => {
+  if (resolved.family === 'legacy') return legacyDelivery(resolved.row);
+
+  const row = await OrderReturnDocumentDetails.findOne({
+    where: { order_id: resolved.row.id },
+    // Newest first: the table has no uniqueness on `order_id`, and an order whose
+    // address was corrected has two rows with the later one being the truth.
+    order: [['id', 'DESC']],
+  });
+
+  if (!row) return null;
+
+  /**
+   * The country by name, not by id.
+   *
+   * Looked up rather than joined: `country_id` here has no foreign key, so the
+   * association would be as loose as every other one in this schema and a single
+   * `findByPk` is both cheaper and clearer. Null where the row named no country,
+   * which most do not — the address is usually Australian.
+   */
+  const country =
+    row.country_id === null ? null : await Countries.findByPk(row.country_id);
+
+  return {
+    company: clean(row.company),
+    contactName: fullName(row.first_name, row.last_name),
+    contactNumber: clean(row.contact_number),
+    email: clean(row.email),
+    address: clean(row.address),
+    city: clean(row.city),
+    state: clean(row.state),
+    postcode: clean(row.postcode),
+    country: country
+      ? clean(country.country_name_display ?? country.country_name)
+      : null,
+    returningDate: toIso(row.returning_date),
+    comment: clean(row.additional_comment),
+  };
 };
 
 /**
