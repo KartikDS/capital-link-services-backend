@@ -2,6 +2,7 @@ import { Op } from 'sequelize';
 import {
   ClsOrder,
   ClsOrderDocuments,
+  DocumentLegalizationDocuments,
   OrderDlQuotes,
   TravelAlerts,
   UserClient,
@@ -205,12 +206,36 @@ export const stats = async (clientId: number): Promise<present.StatView[]> => {
 // ---------------------------------------------------------------------------
 
 /**
- * Every document across the client's orders.
+ * Every document across the client's orders, from both tables that hold one.
  *
- * `tbl_cls_order_documents` has no client column, so the client's order ids are
- * gathered first and the documents read by those. Two queries rather than a
- * join, because the join would be against a table with no index on `order_id`
- * and the id list is small.
+ * ## What was missing
+ *
+ * This used to read `tbl_cls_order_documents` and nothing else, which meant the
+ * portal's documents screen was blind to every document on a legalisation order.
+ * Those live in `tbl_document_legalization_documents` — a different table with a
+ * different shape, written by `orders.lodge` when an attestation order comes in —
+ * so a client who lodged a document-attestation order and then opened Documents
+ * saw an empty screen, while their own order card said CLS was waiting on the
+ * very files they had listed.
+ *
+ * Both are read now and merged, newest first. `source` says which table a row
+ * came from, because the two are not equally actionable: an uploaded scan can be
+ * downloaded and removed, and a legalisation row is a *listed* document — the
+ * client's declaration of what they are sending — which may have no file behind
+ * it at all.
+ *
+ * ## Why the submitted-date filter is gone
+ *
+ * The old query took only orders with a `date_submitted`, which is how this
+ * schema marks a draft: an unsubmitted `tbl_cls_order` row is a half-finished
+ * basket. That looked reasonable and hid real documents. A client who saved a
+ * draft, attached their passport scan to it and came back the next day found the
+ * document nowhere — the file was stored, indexed against the order, and simply
+ * not returned. Documents are now read across every order the client owns, and a
+ * draft's documents are the client's own files either way.
+ *
+ * Two queries rather than a join, because the join would be against tables with
+ * no index on `order_id` and the id list is small.
  */
 export const documents = async (
   clientId: number,
@@ -220,9 +245,7 @@ export const documents = async (
     attributes: ['id', 'order_no'],
     where: {
       client_id: clientId,
-      ...(options.reference
-        ? { order_no: options.reference }
-        : { date_submitted: { [Op.ne]: null } }),
+      ...(options.reference ? { order_no: options.reference } : {}),
     },
     limit: 500,
   });
@@ -233,15 +256,94 @@ export const documents = async (
     ownedOrders.map((order) => [order.id, clean(order.order_no) ?? String(order.id)])
   );
 
-  const rows = await ClsOrderDocuments.findAll({
-    where: { order_id: { [Op.in]: [...referenceOf.keys()] } },
-    order: [['created', 'DESC']],
-    limit: options.limit,
+  const orderIds = [...referenceOf.keys()];
+
+  const [uploaded, legalisation] = await Promise.all([
+    ClsOrderDocuments.findAll({
+      where: { order_id: { [Op.in]: orderIds } },
+      order: [['created', 'DESC']],
+      limit: options.limit,
+    }),
+    DocumentLegalizationDocuments.findAll({
+      where: { order_id: { [Op.in]: orderIds } },
+      // No timestamp on this table, so its own id order is the only sequence it
+      // has — which is insertion order, and therefore newest last.
+      order: [['id', 'DESC']],
+      limit: options.limit,
+    }),
+  ]);
+
+  /**
+   * Newest first — and the undated rows are not allowed to be starved by it.
+   *
+   * `tbl_document_legalization_documents` has no timestamps at all, so its rows
+   * carry a null `createdAt` and cannot be interleaved by date. Sorting them last
+   * is the honest answer — the screen groups by state anyway, and a date guessed
+   * from an auto-increment id would put a document in a week it was not added.
+   *
+   * But "last" plus a cap means "never" for a client with more uploads than the
+   * limit: a hundred scans would push every legalisation row off the end, which is
+   * exactly the client whose documents screen this change exists to fix. So the
+   * undated rows keep their places and the dated ones are trimmed to fit around
+   * them. Legalisation rows are a handful per order — the documents the client
+   * declared — so the reservation cannot swallow the list either.
+   */
+  const declared = legalisation.map((row) =>
+    present.toLegalisationDocumentView(
+      row,
+      referenceOf.get(row.order_id ?? 0) ?? '—'
+    )
+  );
+
+  const dated = uploaded
+    .map((row) => toDocumentView(row, referenceOf.get(row.order_id ?? 0) ?? '—'))
+    .sort((left, right) =>
+      (right.createdAt ?? '').localeCompare(left.createdAt ?? '')
+    );
+
+  const room = Math.max(0, options.limit - declared.length);
+
+  return [...dated.slice(0, room), ...declared.slice(0, options.limit)];
+};
+
+/**
+ * Which table a document id names.
+ *
+ * Two auto-increment tables hold a client's documents and both start at 1, so the
+ * ids overlap. `documents` above returns the legalisation ones prefixed — `dl-14`
+ * — and this is the one place that prefix is understood. Everything downstream
+ * gets a table and a number rather than a string to re-parse.
+ *
+ * A malformed id is `null` rather than an exception: the caller turns it into the
+ * same "we could not find that document" a wrong-but-well-formed id gets, which is
+ * what stops the shape of an id being something to probe.
+ */
+type DocumentSource = 'uploaded' | 'legalisation';
+
+const parseDocumentId = (
+  id: string
+): { source: DocumentSource; rowId: number } | null => {
+  const match = /^(dl-)?(\d+)$/.exec(id.trim());
+  if (!match) return null;
+
+  const rowId = Number.parseInt(match[2] ?? '', 10);
+  if (!Number.isSafeInteger(rowId) || rowId <= 0) return null;
+
+  return { source: match[1] ? 'legalisation' : 'uploaded', rowId };
+};
+
+/** True when the order exists and belongs to the caller. Same answer for both. */
+const ownsOrder = async (
+  clientId: number,
+  orderId: number | null
+): Promise<boolean> => {
+  if (!orderId) return false;
+
+  const order = await ClsOrder.findOne({
+    where: { id: orderId, client_id: clientId },
   });
 
-  return rows.map((row) =>
-    toDocumentView(row, referenceOf.get(row.order_id ?? 0) ?? '—')
-  );
+  return order !== null;
 };
 
 /**
@@ -250,23 +352,44 @@ export const documents = async (
  * The ownership check is the reason this is not just `findByPk`. The previous
  * build served `/uploads` statically, which meant anyone with a filename could
  * read anyone's passport scan. Every download goes through here instead.
+ *
+ * It now resolves both document tables, because both are listed on the client's
+ * documents screen — see `documents` above. Which table an id names is decided by
+ * its prefix and nothing else: an unprefixed id is never looked up in the
+ * legalisation table, so the two id spaces cannot be confused for one another.
+ *
+ * A legalisation row may have no file at all, which is not an error — the
+ * attestation form lets a client declare a document they are posting in. It
+ * answers the same "no longer available" as an uploaded row with an empty column,
+ * because from the client's side the two are the same fact.
  */
 export const findOwnedDocument = async (
   clientId: number,
-  documentId: number
+  documentId: string
 ): Promise<{ storedPath: string; name: string }> => {
-  const document = await ClsOrderDocuments.findByPk(documentId);
+  const parsed = parseDocumentId(documentId);
 
-  if (!document?.order_id) throw notFound('We could not find that document.');
+  // Not yours, does not exist, and not a document id all give the same answer.
+  if (!parsed) throw notFound('We could not find that document.');
 
-  const order = await ClsOrder.findOne({
-    where: { id: document.order_id, client_id: clientId },
-  });
+  const stored =
+    parsed.source === 'uploaded'
+      ? await (async () => {
+          const document = await ClsOrderDocuments.findByPk(parsed.rowId);
+          if (!document) return null;
+          if (!(await ownsOrder(clientId, document.order_id))) return null;
+          return clean(document.document);
+        })()
+      : await (async () => {
+          const document = await DocumentLegalizationDocuments.findByPk(
+            parsed.rowId
+          );
+          if (!document) return null;
+          if (!(await ownsOrder(clientId, document.order_id))) return null;
+          return clean(document.document_file);
+        })();
 
-  // Not yours and does not exist give the same answer.
-  if (!order) throw notFound('We could not find that document.');
-
-  const stored = clean(document.document);
+  if (stored === null) throw notFound('We could not find that document.');
   if (!stored) throw notFound('That document is no longer available.');
 
   return { storedPath: stored, name: stored.split('/').pop() ?? 'document' };
@@ -279,25 +402,39 @@ export const findOwnedDocument = async (
  * `APPROVED` it is part of a submission — possibly one already lodged with an
  * embassy — and a client deleting it would leave CLS's record of what was sent
  * incomplete.
+ *
+ * A legalisation row is refused outright, whatever its status. Those are not
+ * uploads: each is a line on the order saying what the client is sending to be
+ * legalised, so removing one changes what CLS has been asked to do rather than
+ * withdrawing a file. The message says so, and says who can change it.
  */
 export const removeDocument = async (
   clientId: number,
-  documentId: number
+  documentId: string
 ): Promise<void> => {
-  const document = await ClsOrderDocuments.findByPk(documentId);
+  const parsed = parseDocumentId(documentId);
+  if (!parsed) throw notFound('We could not find that document.');
+
+  const { conflict } = await import('../../shared/errors');
+
+  if (parsed.source === 'legalisation') {
+    throw conflict(
+      'That document is part of what your order asks us to legalise, so it cannot be removed here. Speak to your consultant if the order itself needs changing.'
+    );
+  }
+
+  const document = await ClsOrderDocuments.findByPk(parsed.rowId);
   if (!document?.order_id) throw notFound('We could not find that document.');
 
-  const order = await ClsOrder.findOne({
-    where: { id: document.order_id, client_id: clientId },
-  });
-  if (!order) throw notFound('We could not find that document.');
+  if (!(await ownsOrder(clientId, document.order_id))) {
+    throw notFound('We could not find that document.');
+  }
 
   const reviewed =
     document.status === DOCUMENT_STATUS.REVIEWED ||
     document.status === DOCUMENT_STATUS.APPROVED;
 
   if (reviewed) {
-    const { conflict } = await import('../../shared/errors');
     throw conflict(
       'We have already reviewed that document, so it cannot be removed. Speak to your consultant if it needs replacing.'
     );

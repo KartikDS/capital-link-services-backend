@@ -15,6 +15,7 @@ import { describeFile } from '../../middleware/upload';
 import {
   CLS_ORDER_STATUS,
   DOCUMENT_STATE,
+  DOCUMENT_STATUS,
   LEGACY_ORDER_STATUS,
   MILESTONE_LABELS,
   ORDER_TYPE_CATEGORY,
@@ -391,6 +392,29 @@ export const toDocumentView = (
   note: note ? truncate(clean(note.notes), 300) : null,
   createdAt: toIso(document.created),
   updatedAt: toIso(document.modified),
+  /**
+   * Whether the website should offer a download and a remove control.
+   *
+   * Carried on the row rather than inferred by the website, because the answer
+   * differs per document *source* and the website has no business knowing which
+   * table a document came from. An uploaded document has a file and can be
+   * withdrawn until CLS reviews it; a legalisation row often has neither — see
+   * `portal.presenter.toLegalisationDocumentView`.
+   *
+   * `downloadable` is "there is a filename recorded", not "the file is on disk".
+   * The download route is the only thing that can answer the second question, and
+   * it answers it with a 404 and a message naming the consultant.
+   */
+  downloadable: clean(document.document) !== null,
+  /**
+   * False once CLS has reviewed it. The same rule the delete route enforces, said
+   * here so the website can grey the control out rather than offering an action
+   * that will be refused — a reviewed document may already be part of a
+   * submission lodged with an embassy.
+   */
+  removable:
+    document.status !== DOCUMENT_STATUS.REVIEWED &&
+    document.status !== DOCUMENT_STATUS.APPROVED,
 });
 
 /**

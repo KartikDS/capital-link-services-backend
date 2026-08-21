@@ -123,7 +123,15 @@ authRoutes.post(
   }
 );
 
-/** POST /api/auth/reset-password */
+/**
+ * POST /api/auth/reset-password
+ *
+ * The response names the account, so the website can email its owner that the
+ * password changed — the one account event a person has to be told about, because
+ * a change they did not make is the only sign they get of a takeover. Consumed by
+ * the website's route and never rendered; the caller has just proved possession of
+ * a valid single-use token for this account, so it tells them nothing new.
+ */
 authRoutes.post(
   '/reset-password',
   limits.passwordReset,
@@ -135,9 +143,12 @@ authRoutes.post(
   ),
   async (req: Request, res: Response) => {
     const { token, password } = req.body as { token: string; password: string };
-    await service.completePasswordReset(token, password);
+    const client = await service.completePasswordReset(token, password);
 
-    message(res, 'Your password has been changed. You can sign in with it now.');
+    ok(res, {
+      message: 'Your password has been changed. You can sign in with it now.',
+      ...(client.email ? { email: client.email, name: client.name } : {}),
+    });
   }
 );
 

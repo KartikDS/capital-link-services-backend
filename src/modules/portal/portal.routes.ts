@@ -14,7 +14,7 @@ import {
 } from '../../middleware/upload';
 import { badRequest, notFound } from '../../shared/errors';
 import { created, message, ok } from '../../shared/http/responses';
-import { addressSchema, idParam, validate, validParams, validQuery } from '../../shared/validation';
+import { addressSchema, validate, validParams, validQuery } from '../../shared/validation';
 import { logger } from '../../shared/logger';
 import * as orderWrites from '../orders/orders.writes';
 import * as orderService from '../orders/orders.service';
@@ -170,6 +170,22 @@ portalRoutes.post(
 );
 
 /**
+ * A document id, from either of the two tables that hold one.
+ *
+ * Not `idParam`. The documents screen lists uploaded documents by their bare
+ * `tbl_cls_order_documents` id and legalisation documents prefixed — `dl-14` —
+ * because both tables auto-increment from 1 and a bare id would be ambiguous. See
+ * `portal.service.parseDocumentId`, which is the one place the prefix is read.
+ *
+ * Bounded so a long value cannot reach the parser or the log.
+ */
+const documentIdParam = z
+  .string()
+  .trim()
+  .max(32)
+  .regex(/^(dl-)?\d+$/, 'That is not a document id.');
+
+/**
  * GET /api/portal/documents/:id/download
  *
  * Streams the file after checking it belongs to the caller. Nothing under
@@ -181,9 +197,9 @@ portalRoutes.post(
  */
 portalRoutes.get(
   '/documents/:id/download',
-  validate(z.object({ id: idParam }), 'params'),
+  validate(z.object({ id: documentIdParam }), 'params'),
   async (req: Request, res: Response) => {
-    const { id } = validParams<{ id: number }>(req);
+    const { id } = validParams<{ id: string }>(req);
     const { storedPath, name } = await service.findOwnedDocument(
       currentUserId(req),
       id
@@ -213,9 +229,9 @@ portalRoutes.get(
 
 portalRoutes.delete(
   '/documents/:id',
-  validate(z.object({ id: idParam }), 'params'),
+  validate(z.object({ id: documentIdParam }), 'params'),
   async (req: Request, res: Response) => {
-    const { id } = validParams<{ id: number }>(req);
+    const { id } = validParams<{ id: string }>(req);
     await service.removeDocument(currentUserId(req), id);
 
     message(res, 'That document has been removed.');

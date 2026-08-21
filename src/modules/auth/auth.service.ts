@@ -322,7 +322,7 @@ export const beginPasswordReset = async (
 export const completePasswordReset = async (
   token: string,
   newPassword: string
-): Promise<void> => {
+): Promise<{ email: string | null; name: string | null }> => {
   let claims: ResetTokenClaims;
 
   try {
@@ -346,6 +346,17 @@ export const completePasswordReset = async (
   await repository.setClientPassword(client.id, await hashPassword(newPassword));
 
   logger.info('Password reset completed', { userId: client.id });
+
+  /**
+   * Who it was, so the website can tell them their password changed.
+   *
+   * Returned rather than kept, because a password that changed without the owner
+   * doing it is the one account event they have to be told about — and only the
+   * website can send mail. Not a leak: the caller has just proved possession of a
+   * valid, single-use reset token for this account, so the address it belongs to
+   * is not news to them.
+   */
+  return { email: clean(client.email), name: clean(client.fname) };
 };
 
 /**

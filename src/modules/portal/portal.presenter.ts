@@ -1,4 +1,11 @@
-import type { OrderDlQuotes, TravelAlerts, UserClient } from '../../models';
+import type {
+  DocumentLegalizationDocuments,
+  OrderDlQuotes,
+  TravelAlerts,
+  UserClient,
+} from '../../models';
+import { describeFile } from '../../middleware/upload';
+import { DOCUMENT_STATE } from '../../domain/codes';
 import { daysSince, isPast, toIso } from '../../shared/dates';
 import { toCents, toCentsOrZero } from '../../shared/money';
 import { clean, cleanOr, fullName, stripHtml, truncate } from '../../shared/text';
@@ -492,5 +499,86 @@ export const toPhotoView = (client: UserClient) => {
     state: 'received' as const,
     note: '',
     storedAs: stored,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Legalisation documents
+// ---------------------------------------------------------------------------
+
+/**
+ * A document on a legalisation order, in the same shape as an uploaded one.
+ *
+ * ## Why this exists at all
+ *
+ * The portal's documents screen used to read `tbl_cls_order_documents` and
+ * nothing else, so every document on a document-attestation order was invisible
+ * to the client who lodged it. Those rows are in
+ * `tbl_document_legalization_documents`, written by `orders.lodge` from the
+ * attestation form's own document table, and there is no reason a client should
+ * see the passport scan they uploaded but not the four certificates they told us
+ * they were sending.
+ *
+ * ## Why the id is prefixed
+ *
+ * `dl-14` rather than `14`. Both tables auto-increment from 1, so a bare id would
+ * collide — and the download route resolves an id straight to a stored file. A
+ * client asking for their own document 14 could have been handed a different
+ * document 14 on another of their own orders. The prefix makes the two id spaces
+ * distinguishable, and `portal.service` dispatches on it.
+ *
+ * ## What is different about these rows
+ *
+ * They are a **declaration** as much as a file. The attestation form asks what
+ * documents are being sent, how many of each, and lets the client name the files
+ * they will attach — so a row can exist with `document_file` null, meaning "the
+ * client says this is coming". That is worth showing: it is the list a consultant
+ * checks the envelope against. It is also why these are not removable — deleting
+ * one would take a line off the order rather than withdraw an upload.
+ *
+ * `status` shares `DOCUMENT_STATE`'s codes with the uploaded table, and a null
+ * status is `awaiting` rather than `received`: a legalisation row with nothing set
+ * is a document CLS is still waiting for.
+ */
+export const toLegalisationDocumentView = (
+  document: DocumentLegalizationDocuments,
+  reference: string
+) => {
+  const stored = clean(document.document_file);
+  const quantity = document.number ?? 0;
+
+  return {
+    id: `dl-${document.id}`,
+    name: clean(document.document_type) ?? 'Document',
+    reference,
+    state: DOCUMENT_STATE[document.status ?? 0] ?? 'awaiting',
+    /**
+     * The type and the count, or "Listed on your order" where there is no file.
+     *
+     * `describeFile` answers null without a filename, and a blank meta line on a
+     * row that is deliberately fileless reads as missing data rather than as a
+     * document still to arrive.
+     */
+    meta:
+      [
+        describeFile(stored, null),
+        quantity > 1 ? `${quantity} copies` : null,
+        stored ? null : 'Listed on your order',
+      ]
+        .filter(Boolean)
+        .join(' · ') || null,
+    note: truncate(clean(document.note), 300),
+    // No timestamps on this table at all. Null rather than a guess from the id —
+    // see the sort note in `portal.service.documents`.
+    createdAt: null,
+    updatedAt: null,
+    /** False when there is no file behind the row, so no download is offered. */
+    downloadable: stored !== null,
+    /**
+     * Never. A client removing one of these takes a document off their own order,
+     * which is a change to what CLS has been asked to legalise rather than the
+     * withdrawal of an upload.
+     */
+    removable: false,
   };
 };

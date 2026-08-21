@@ -291,25 +291,50 @@ export const components = {
     Document: {
       type: 'object',
       properties: {
-        id: { type: 'integer' },
-        name: { type: 'string' },
-        orderReference: { type: 'string', nullable: true },
-        status: {
+        id: {
           type: 'string',
-          enum: ['pending', 'approved', 'rejected'],
-          description: 'From `tbl_cls_order_documents.status`.',
+          description:
+            'A string, not an integer, because two tables hold a client’s documents and both auto-increment from 1. An uploaded document is its bare `tbl_cls_order_documents.id`; a document listed on a legalisation order is its `tbl_document_legalization_documents.id` prefixed with `dl-`. Pass it back verbatim to the download and delete routes.',
+        },
+        name: { type: 'string' },
+        reference: {
+          type: 'string',
+          description: 'The order the document belongs to.',
+        },
+        state: {
+          type: 'string',
+          enum: ['awaiting', 'received', 'in-review', 'rejected', 'ready'],
+          description:
+            'Five states, from `status` on whichever table the row came from. The website collapses them into three for display and reads `note` to tell a rejection from a review.',
+        },
+        meta: {
+          type: 'string',
+          nullable: true,
+          description:
+            'A pre-formatted line: the file type, the number of copies, or “Listed on your order” where the row is a declaration with no file behind it.',
         },
         note: {
           type: 'string',
           nullable: true,
           description: 'The reviewer’s reason, on a rejection.',
         },
-        sizeBytes: { type: 'integer', nullable: true },
-        uploadedAt: { type: 'string', format: 'date-time', nullable: true },
-        downloadPath: {
+        createdAt: {
           type: 'string',
+          format: 'date-time',
           nullable: true,
-          description: 'Null when the file is a legacy path this process cannot reach.',
+          description:
+            'Null on a legalisation row: `tbl_document_legalization_documents` has no timestamps, and a date guessed from an auto-increment id would put a document in a week it was not added.',
+        },
+        updatedAt: { type: 'string', format: 'date-time', nullable: true },
+        downloadable: {
+          type: 'boolean',
+          description:
+            'False where no filename is recorded. Whether the file is actually on disk is a question only the download route can answer, and it answers it with a 404.',
+        },
+        removable: {
+          type: 'boolean',
+          description:
+            'False once CLS has reviewed an upload, and always false for a document listed on a legalisation order — removing one of those changes what the order asks CLS to legalise rather than withdrawing a file. The delete route refuses either way; this is so a client is not offered the control.',
         },
       },
     },

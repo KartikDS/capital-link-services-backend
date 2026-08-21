@@ -147,7 +147,7 @@ export const portalPaths = {
   '/api/portal/documents': {
     get: operation('/api/portal/documents', {
       tag,
-      summary: 'Your uploaded documents',
+      summary: 'Every document on your orders',
       auth: 'bearer',
       query: [
         {
@@ -157,6 +157,8 @@ export const portalPaths = {
         },
         ...PAGING,
       ],
+      description:
+        'Both tables that hold a client’s documents: the files uploaded against an order (`tbl_cls_order_documents`) and the documents listed on a legalisation order (`tbl_document_legalization_documents`), which the attestation form writes and which may be a declaration with no file behind it. Merged, newest first, with the undated legalisation rows last. `id` carries a `dl-` prefix on the second set — see the `Document` schema.',
       responses: { 200: okList('Documents', 'documents', 'Document', true) },
     }),
 
@@ -200,7 +202,7 @@ export const portalPaths = {
       tag,
       summary: 'Delete one of your documents',
       description:
-        'Removes the row and the file. Refused once a consultant has approved the document — at that point it is part of a submission, not a draft upload.',
+        'Removes the row and the file. Refused once a consultant has reviewed or approved the document — at that point it is part of a submission, possibly one already lodged with an embassy, and not a draft upload.\n\nAlso refused for a `dl-` prefixed id: those are documents listed on a legalisation order, so removing one changes what CLS has been asked to legalise. `removable` on the document says which is which.',
       auth: 'bearer',
       responses: {
         200: okObject('Deleted', { message: { type: 'string' } }),
