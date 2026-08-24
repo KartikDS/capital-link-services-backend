@@ -3,8 +3,10 @@ import {
   ClsOrder,
   ClsOrderDocuments,
   OrderNotes,
+  OrderTravellerDetails,
   UserClient,
 } from '../../models';
+import { scopeOfOrder } from '../../domain/checklist';
 import { badRequest, conflict } from '../../shared/errors';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { clean, fullName } from '../../shared/text';
@@ -78,10 +80,51 @@ export const attachDocuments = async (
   const orderId = resolved.row.id;
   const now = toLegacyDateTime();
 
+  /**
+   * The order's own scope, stamped onto every row.
+   *
+   * These columns were left null until now, and that was a defect rather than an
+   * omission: the old admin's document screen selects with
+   *
+   * ```sql
+   * WHERE cod.country_id = ? AND cod.visa_type_id = ?
+   *   AND cod.order_id = ? AND cod.traveller_id = ?
+   * ```
+   *
+   * (`ManageOrderDocumentsController::listAction`) — so a row with them null
+   * matched nothing, and a client's uploaded passport was **invisible to CLS
+   * staff working in their own application**. Filling them is what makes an
+   * upload findable there.
+   *
+   * `traveller_id` is the order's primary applicant. The old application knows
+   * exactly which traveller a file belongs to, because the client clicks upload
+   * on that traveller's checklist row; ours cannot, because the order form posts
+   * its files with nothing but a reference. Attributing them to the lead
+   * applicant is the honest approximation, and on every journey that uploads
+   * that is the person placing the order.
+   */
+  const [scope, travellers] = await Promise.all([
+    scopeOfOrder(resolved.row),
+    OrderTravellerDetails.findAll({
+      where: { order_id: orderId },
+      order: [['id', 'ASC']],
+    }),
+  ]);
+
+  const primary =
+    travellers.find((traveller) => traveller.is_primary === 1) ?? travellers[0];
+
   const created = await Promise.all(
     files.map((file) =>
       ClsOrderDocuments.create({
         order_id: orderId,
+        country_id: scope.countryId,
+        visa_type_id: scope.visaTypeId,
+        entry_option: scope.entryOption,
+        process_location_id: scope.processLocationId,
+        nationality: scope.nationality,
+        region: scope.region,
+        traveller_id: primary?.id ?? null,
         // Relative to UPLOAD_DIR, matching how the old application stores paths.
         document: path.relative(
           path.resolve(process.env.UPLOAD_DIR ?? './uploads'),

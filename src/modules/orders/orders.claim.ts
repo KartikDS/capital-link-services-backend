@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
+import type { Transaction } from 'sequelize';
 import { sequelize } from '../../config/database';
-import { ClsOrder } from '../../models';
+import { ClsOrder, OrderTravellerDetails } from '../../models';
 import * as authRepository from '../auth/auth.repository';
 import { findClsOrderIdByReference } from './orders.repository';
 import { CLIENT_TYPE } from '../../domain/codes';
@@ -113,6 +114,34 @@ const nameFrom = (
 };
 
 /**
+ * Records that the order's lead applicant is the account holder.
+ *
+ * `tbl_order_traveller_details.is_client` is how the old application marks the
+ * traveller who *is* the client rather than somebody being travelled for —
+ * `VisaInformationController.php:793` sets it on applicant zero exactly when the
+ * order created the account. Lodgement cannot set it here, because at that point
+ * a guest order has no account; the claim is the moment it becomes true.
+ *
+ * Scoped to the primary applicant, so an order covering a family marks the
+ * person who placed it and nobody else.
+ */
+const markPrimaryTravellerAsClient = async (
+  orderId: number,
+  transaction: Transaction
+): Promise<void> => {
+  const travellers = await OrderTravellerDetails.findAll({
+    where: { order_id: orderId },
+    order: [['id', 'ASC']],
+    transaction,
+  });
+
+  const primary =
+    travellers.find((traveller) => traveller.is_primary === 1) ?? travellers[0];
+
+  if (primary) await primary.update({ is_client: 1 }, { transaction });
+};
+
+/**
  * Attaches an order to an account, creating one if the address is new.
  *
  * Never throws for an ordinary miss — an unknown reference, a legacy row, an
@@ -189,6 +218,7 @@ export const claim = async (reference: string): Promise<ClaimResult> => {
 
     if (existing) {
       await order.update({ client_id: existing.id }, { transaction });
+      await markPrimaryTravellerAsClient(orderId, transaction);
 
       logger.info('Guest order claimed by an existing account', {
         reference,
@@ -232,6 +262,7 @@ export const claim = async (reference: string): Promise<ClaimResult> => {
     );
 
     await order.update({ client_id: client.id }, { transaction });
+    await markPrimaryTravellerAsClient(orderId, transaction);
 
     // The password is deliberately not in this line, and must not be added to
     // it. It reaches the client by email and nowhere else.

@@ -18,6 +18,7 @@
  */
 
 const findByPk = jest.fn();
+const findTravellers = jest.fn();
 const findClsOrderIdByReference = jest.fn();
 const findAnyClientByEmail = jest.fn();
 const findClientById = jest.fn();
@@ -36,6 +37,7 @@ jest.mock('../../src/config/database', () => ({
 
 jest.mock('../../src/models', () => ({
   ClsOrder: { findByPk },
+  OrderTravellerDetails: { findAll: findTravellers },
 }));
 
 jest.mock('../../src/modules/orders/orders.repository', () => ({
@@ -63,7 +65,17 @@ const guestOrder = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/** An applicant row, as lodgement writes it: primary, and not yet the client. */
+const traveller = (overrides: Record<string, unknown> = {}) => ({
+  id: 900,
+  is_primary: 1,
+  is_client: 0,
+  update: jest.fn().mockResolvedValue(undefined),
+  ...overrides,
+});
+
 beforeEach(() => {
+  findTravellers.mockResolvedValue([]);
   findClsOrderIdByReference.mockResolvedValue(1482);
   nextDisplayId.mockResolvedValue('CLS000042');
   createClient.mockImplementation((input: { email: string }) =>
@@ -242,6 +254,83 @@ describe('claim', () => {
     expect(createClient.mock.calls[0][0]).toMatchObject({
       fname: 'priya',
       lname: '',
+    });
+  });
+
+  /**
+   * `is_client` marks the applicant who *is* the account holder, rather than
+   * somebody being travelled for. The old application sets it on applicant zero
+   * exactly when the order opens the account
+   * (`VisaInformationController.php:793`), and lodgement cannot: at that point a
+   * guest order has no account for them to be the holder of.
+   */
+  describe('the lead applicant is marked as the client', () => {
+    it('stamps the primary applicant when an account is created', async () => {
+      const primary = traveller();
+      const companion = traveller({ id: 901, is_primary: 0 });
+      findByPk.mockResolvedValue(guestOrder());
+      findAnyClientByEmail.mockResolvedValue(null);
+      findTravellers.mockResolvedValue([primary, companion]);
+
+      await claim('CLS-001482');
+
+      expect(primary.update).toHaveBeenCalledWith(
+        { is_client: 1 },
+        expect.anything()
+      );
+      // A family member on the same order is not the account holder.
+      expect(companion.update).not.toHaveBeenCalled();
+    });
+
+    it('stamps them when the order is linked to an account that already existed', async () => {
+      const primary = traveller();
+      findByPk.mockResolvedValue(guestOrder());
+      findAnyClientByEmail.mockResolvedValue({
+        id: 12,
+        email: 'priya@example.com',
+        fname: 'Priya',
+      });
+      findTravellers.mockResolvedValue([primary]);
+
+      await claim('CLS-001482');
+
+      expect(primary.update).toHaveBeenCalledWith(
+        { is_client: 1 },
+        expect.anything()
+      );
+    });
+
+    it('leaves the applicants alone on an order that already had an owner', async () => {
+      const primary = traveller();
+      findByPk.mockResolvedValue(guestOrder({ client_id: 12 }));
+      findClientById.mockResolvedValue({ id: 12, email: 'priya@example.com', fname: 'Priya' });
+      findTravellers.mockResolvedValue([primary]);
+
+      await claim('CLS-001482');
+
+      // Nothing changed hands, so nothing is restamped — this is the path a
+      // Stripe redelivery takes.
+      expect(primary.update).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the first applicant when none is flagged primary', async () => {
+      const first = traveller({ is_primary: 0 });
+      findByPk.mockResolvedValue(guestOrder());
+      findAnyClientByEmail.mockResolvedValue(null);
+      findTravellers.mockResolvedValue([first, traveller({ id: 901, is_primary: 0 })]);
+
+      await claim('CLS-001482');
+
+      expect(first.update).toHaveBeenCalledWith({ is_client: 1 }, expect.anything());
+    });
+
+    it('does not fail an order that has no applicant rows', async () => {
+      findByPk.mockResolvedValue(guestOrder());
+      findAnyClientByEmail.mockResolvedValue(null);
+      findTravellers.mockResolvedValue([]);
+
+      // A legalisation order can be lodged with no applicants at all.
+      await expect(claim('CLS-001482')).resolves.toMatchObject({ created: true });
     });
   });
 

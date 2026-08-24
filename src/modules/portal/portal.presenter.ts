@@ -1,11 +1,11 @@
 import type {
-  DocumentLegalizationDocuments,
+  OrderDlChecklist,
   OrderDlQuotes,
   TravelAlerts,
   UserClient,
 } from '../../models';
 import { describeFile } from '../../middleware/upload';
-import { DOCUMENT_STATE } from '../../domain/codes';
+import { DOCUMENT_STATE, DOCUMENT_STATUS } from '../../domain/codes';
 import { daysSince, isPast, toIso } from '../../shared/dates';
 import { toCents, toCentsOrZero } from '../../shared/money';
 import { clean, cleanOr, fullName, stripHtml, truncate } from '../../shared/text';
@@ -536,22 +536,29 @@ export const toPhotoView = (client: UserClient) => {
  * checks the envelope against. It is also why these are not removable — deleting
  * one would take a line off the order rather than withdraw an upload.
  *
- * `status` shares `DOCUMENT_STATE`'s codes with the uploaded table, and a null
- * status is `awaiting` rather than `received`: a legalisation row with nothing set
- * is a document CLS is still waiting for.
+ * There is no status column on this table, so the state is derived from whether
+ * a file has arrived — see the note on `state` below.
  */
 export const toLegalisationDocumentView = (
-  document: DocumentLegalizationDocuments,
+  document: OrderDlChecklist,
   reference: string
 ) => {
-  const stored = clean(document.document_file);
+  const stored = clean(document.doc_file);
   const quantity = document.number ?? 0;
 
   return {
     id: `dl-${document.id}`,
-    name: clean(document.document_type) ?? 'Document',
+    name: clean(document.type) ?? 'Document',
     reference,
-    state: DOCUMENT_STATE[document.status ?? 0] ?? 'awaiting',
+    /**
+     * Derived, because `tbl_order_dl_checklist` has no status column.
+     *
+     * The old admin's own DL screen makes the same distinction the same way — it
+     * renders a "Show Uploaded Document" link when `doc_file` is set and nothing
+     * when it is not. A row with a file has been received; one without is a line
+     * the client said was coming and CLS is still waiting for.
+     */
+    state: stored ? DOCUMENT_STATE[DOCUMENT_STATUS.UPLOADED] : 'awaiting',
     /**
      * The type and the count, or "Listed on your order" where there is no file.
      *

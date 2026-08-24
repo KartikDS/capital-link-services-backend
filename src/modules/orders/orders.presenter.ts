@@ -182,15 +182,23 @@ const readMilestones = (
 // tbl_cls_order
 // ---------------------------------------------------------------------------
 
+/**
+ * What each `tbl_cls_order.status` is called to a client.
+ *
+ * `1` is "Placed", not "Completed". The column's schema comment says completed
+ * and it means the *client* completed the order — see `CLS_ORDER_STATUS`. An
+ * order that has just been paid for is at `1`, and telling its owner it was
+ * complete while a consultant had not started is the bug this wording fixes.
+ */
 const CLS_STATUS_LABEL: Record<number, string> = {
-  [CLS_ORDER_STATUS.PENDING]: 'In progress',
-  [CLS_ORDER_STATUS.COMPLETED]: 'Completed',
+  [CLS_ORDER_STATUS.PENDING]: 'Awaiting submission',
+  [CLS_ORDER_STATUS.COMPLETED]: 'Placed',
   [CLS_ORDER_STATUS.CLS_CONFIRMED]: 'Confirmed by CLS',
 };
 
 const CLS_STATUS_ID: Record<number, string> = {
   [CLS_ORDER_STATUS.PENDING]: 'pending',
-  [CLS_ORDER_STATUS.COMPLETED]: 'completed',
+  [CLS_ORDER_STATUS.COMPLETED]: 'placed',
   [CLS_ORDER_STATUS.CLS_CONFIRMED]: 'confirmed',
 };
 
@@ -281,7 +289,10 @@ export const toOrderView = (
     detail: detailLine(travellers.length, destination),
     applicant,
     destination,
-    stage: clsStageOf(status, actionRequired),
+    stage: clsStageOf(actionRequired, {
+      completedAtCls: milestones.dates[2] !== null,
+      closed: milestones.dates[3] !== null,
+    }),
     status: CLS_STATUS_ID[status] ?? 'pending',
     statusLabel: CLS_STATUS_LABEL[status] ?? 'In progress',
     progress: milestones.progress,

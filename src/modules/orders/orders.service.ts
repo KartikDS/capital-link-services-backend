@@ -3,6 +3,7 @@ import { toIso } from '../../shared/dates';
 import { clean, fullName } from '../../shared/text';
 import { Countries, OrderReturnDocumentDetails } from '../../models';
 import type { ClsOrder, Orders } from '../../models';
+import { materialiseChecklistQuietly } from '../../domain/checklist';
 import * as repository from './orders.repository';
 import {
   buildTimeline,
@@ -226,6 +227,21 @@ export const documents = async (resolved: ResolvedOrder) => {
   }
 
   const reference = clean(resolved.row.order_no) ?? String(resolved.row.id);
+
+  /**
+   * The checklist is derived here too, if it has not been already.
+   *
+   * `ManageOrderDocumentsController::indexAction` does exactly this — a
+   * consultant opening an order's documents materialises the checklist if the
+   * order has none — and it is what makes the list appear on an order whose visa
+   * type was only settled after it was lodged. The materialiser is idempotent and
+   * returns early when rows exist, so this costs one `COUNT(*)` on the ordinary
+   * path.
+   *
+   * Quietly: a read a client is waiting on must not fail because the catalogue
+   * was unreachable, or because the deployment is running `DB_READ_ONLY`.
+   */
+  await materialiseChecklistQuietly(resolved.row);
 
   const [rows, notes] = await Promise.all([
     repository.listClsDocuments(resolved.row.id),

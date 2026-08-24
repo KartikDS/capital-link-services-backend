@@ -120,12 +120,29 @@ export const LEGACY_SUBMITTED_FROM = LEGACY_ORDER_STATUS.ORDERED;
  *
  * Schema comment, verbatim: `0=pending; 1=completed; 2=cls_confirmed`
  *
- * The ordering is not a progression — `2` (confirmed by CLS) comes after `0`
- * but before `1` in the real workflow. Read it as a state, never compared with
- * `>` or `<`.
+ * **"completed" means the client completed the order, not that CLS completed the
+ * job.** The comment reads the other way and it misleads; what the old
+ * application actually does is unambiguous, and it does it in every flow:
+ *
+ * | Old application | Writes |
+ * | --- | --- |
+ * | `ApplicationPoliceClearanceController.php:733` — details saved | `0` |
+ * | `ApplicationPoliceClearanceController.php:1300` — payment succeeded | `1` |
+ * | `ApplicationRussianVisaVoucherController.php:421` / `:1063` | `0` then `1` |
+ * | `VisaInformationController.php:1294` — payment succeeded | `1` |
+ * | `ApplicationDocumentLegalisationController.php:896` — order placed | `2` |
+ *
+ * So the ladder is: `0` = in the client's hands and not yet placed, non-zero =
+ * placed, `2` = CLS has acknowledged it. An order left at `0` reads to CLS's own
+ * screens as an abandoned basket.
+ *
+ * That is why nothing here derives "the job is finished" from this column — the
+ * milestone dates on the per-service detail tables are what record that, and
+ * `clsStageOf` reads those instead.
  */
 export const CLS_ORDER_STATUS = {
   PENDING: 0,
+  /** Placed by the client. The schema calls it "completed"; see above. */
   COMPLETED: 1,
   CLS_CONFIRMED: 2,
 } as const;
@@ -259,12 +276,27 @@ export const DISABLED = 0;
  */
 export type PortalStage = 'action-required' | 'in-progress' | 'ready' | 'completed';
 
+/**
+ * How far through the job an order is, from the milestone dates.
+ *
+ * Not from `status`, and that is the correction: `status = 1` means the *client*
+ * placed the order (see `CLS_ORDER_STATUS`), so reading it as "finished" marked
+ * every paid order completed the moment the money landed.
+ *
+ * The four milestone dates are what the old application stamps as a job moves,
+ * and the last two are the two the client cares about:
+ *
+ * - `date_completed_and_received_at_cls` — the work is done and the documents are
+ *   back with CLS, which is `ready`
+ * - `date_order_on_route_and_closed` — they are on their way, which closes it
+ */
 export const clsStageOf = (
-  status: number | null,
-  hasOutstandingDocuments: boolean
+  hasOutstandingDocuments: boolean,
+  milestones: { completedAtCls: boolean; closed: boolean }
 ): PortalStage => {
   if (hasOutstandingDocuments) return 'action-required';
-  if (status === CLS_ORDER_STATUS.COMPLETED) return 'completed';
+  if (milestones.closed) return 'completed';
+  if (milestones.completedAtCls) return 'ready';
   return 'in-progress';
 };
 

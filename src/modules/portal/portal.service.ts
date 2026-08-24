@@ -2,7 +2,7 @@ import { Op } from 'sequelize';
 import {
   ClsOrder,
   ClsOrderDocuments,
-  DocumentLegalizationDocuments,
+  OrderDlChecklist,
   OrderDlQuotes,
   TravelAlerts,
   UserClient,
@@ -264,8 +264,14 @@ export const documents = async (
       order: [['created', 'DESC']],
       limit: options.limit,
     }),
-    DocumentLegalizationDocuments.findAll({
-      where: { order_id: { [Op.in]: orderIds } },
+    /**
+     * `tbl_order_dl_checklist`, which is where a legalisation order's document
+     * lines actually live — see the note in `orders.lodge`. The other table,
+     * `tbl_document_legalization_documents`, has no reader in CLS's own
+     * application and this API no longer writes it.
+     */
+    OrderDlChecklist.findAll({
+      where: { order_no: { [Op.in]: orderIds } },
       // No timestamp on this table, so its own id order is the only sequence it
       // has — which is insertion order, and therefore newest last.
       order: [['id', 'DESC']],
@@ -291,7 +297,8 @@ export const documents = async (
   const declared = legalisation.map((row) =>
     present.toLegalisationDocumentView(
       row,
-      referenceOf.get(row.order_id ?? 0) ?? '—'
+      // `order_no` on the checklist table holds the `tbl_cls_order.id`.
+      referenceOf.get(row.order_no ?? 0) ?? '—'
     )
   );
 
@@ -381,12 +388,11 @@ export const findOwnedDocument = async (
           return clean(document.document);
         })()
       : await (async () => {
-          const document = await DocumentLegalizationDocuments.findByPk(
-            parsed.rowId
-          );
+          const document = await OrderDlChecklist.findByPk(parsed.rowId);
           if (!document) return null;
-          if (!(await ownsOrder(clientId, document.order_id))) return null;
-          return clean(document.document_file);
+          // `order_no` on this table holds the `tbl_cls_order.id`.
+          if (!(await ownsOrder(clientId, document.order_no))) return null;
+          return clean(document.doc_file);
         })();
 
   if (stored === null) throw notFound('We could not find that document.');

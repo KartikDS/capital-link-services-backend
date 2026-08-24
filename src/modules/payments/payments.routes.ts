@@ -16,6 +16,7 @@ import {
   PAYMENT_OPTION,
   PAYMENT_STATUS,
 } from '../../domain/codes';
+import { materialiseChecklistQuietly } from '../../domain/checklist';
 import * as orderService from '../orders/orders.service';
 
 /**
@@ -159,6 +160,33 @@ paymentRoutes.post(
       lname: payerName.last ?? clean(client?.lname),
       email: clean(body.payer?.email) ?? clean(client?.email),
       phone: clean(body.payer?.phone) ?? clean(client?.phone),
+      mobile: clean(client?.mobile),
+
+      /**
+       * The billing address, copied off the account.
+       *
+       * The old application does exactly this — `VisaInformationController.php`
+       * fills the payer block and the `mba_*` block from the `tbl_user_client`
+       * row before it saves the payment — and CLS's receipt and reconciliation
+       * screens read the address from here, not from the account. Leaving them
+       * null printed a receipt with no address on it.
+       *
+       * Stripe's own billing address is not used: it is whatever the cardholder
+       * typed at the checkout, which for a corporate card is the finance team's.
+       * The account address is the one CLS invoices.
+       */
+      address: clean(client?.address),
+      city: clean(client?.city),
+      state: clean(client?.state),
+      postcode: clean(client?.postcode),
+      country_id: client?.country_id ?? null,
+      department_id: client?.department_id ?? null,
+      mba_address: clean(client?.mba_address) ?? clean(client?.address),
+      mba_city: clean(client?.mba_city) ?? clean(client?.city),
+      mba_state: clean(client?.mba_state) ?? clean(client?.state),
+      mba_postcode: clean(client?.mba_postcode) ?? clean(client?.postcode),
+      mba_country_id: client?.mba_country_id ?? client?.country_id ?? null,
+
       total_order_price: centsToNumber(body.amountCents),
       payment_option: PAYMENT_OPTION.CREDIT_CARD,
       s_paid: PAID_VIA.ONLINE,
@@ -169,10 +197,38 @@ paymentRoutes.post(
 
     // Move the order's own payment flag, so CLS's screens show it as paid.
     if (resolved.family === 'cls') {
+      /**
+       * The payment is also what places the order.
+       *
+       * `ApplicationPoliceClearanceController.php:1298-1300` and
+       * `VisaInformationController.php:1292-1294` both stamp `date_submitted`
+       * and move `status` to `1` in the same breath as recording the payment —
+       * because in the old flow this *is* the place-order step. An order left at
+       * `0` reads to CLS's screens as a basket somebody abandoned.
+       *
+       * Only forward, and only from `PENDING`: an order a consultant has already
+       * moved to `CLS_CONFIRMED` must not be dragged back by a webhook that
+       * arrives late.
+       */
       await resolved.row.update({
         payment_status: PAYMENT_STATUS.COMPLETE,
-        status: resolved.row.status ?? CLS_ORDER_STATUS.PENDING,
+        ...(resolved.row.status === CLS_ORDER_STATUS.PENDING || resolved.row.status === null
+          ? { status: CLS_ORDER_STATUS.COMPLETED }
+          : {}),
+        ...(resolved.row.date_submitted ? {} : { date_submitted: toLegacyDateTime() }),
+        date_last_saved: toLegacyDateTime(),
       });
+
+      /**
+       * And it is where the document checklist appears.
+       *
+       * `VisaInformationController.php:1309` derives the checklist from the
+       * catalogue immediately after the payment commits, which is the moment the
+       * order becomes something a consultant will work. Quietly, because the
+       * money has already moved and a catalogue lookup must not turn a recorded
+       * payment into an error.
+       */
+      await materialiseChecklistQuietly(resolved.row);
     } else {
       const { LEGACY_ORDER_STATUS } = await import('../../domain/codes');
 
