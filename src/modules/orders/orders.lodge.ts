@@ -431,62 +431,59 @@ export const lodgeClearanceOrder = async (
     courierOptionId: input.courierOptionId,
   });
 
-  return sequelize.transaction(async (transaction) => {
-    const order = await createHeader(
-      {
-        clientId: input.clientId,
-        orderType: ORDER_TYPE.POLICE_CLEARANCE,
-        // Charged online: the payment moves it to placed.
-        placed: false,
-        contact: input.contact,
-        destinationCountryId: input.countryId,
-        departureDate: input.departureDate,
-        applicants: input.applicants,
-        courierOptionId: input.courierOptionId,
-        quote,
-      },
-      transaction
-    );
+  return sequelize
+    .transaction(async (transaction) => {
+      const order = await createHeader(
+        {
+          clientId: input.clientId,
+          orderType: ORDER_TYPE.POLICE_CLEARANCE,
+          // Charged online: the payment moves it to placed.
+          placed: false,
+          contact: input.contact,
+          destinationCountryId: input.countryId,
+          departureDate: input.departureDate,
+          applicants: input.applicants,
+          courierOptionId: input.courierOptionId,
+          quote,
+        },
+        transaction
+      );
 
-    await order.update(
-      { police_clearance_id: input.clearanceId },
-      { transaction }
-    );
+      await order.update({ police_clearance_id: input.clearanceId }, { transaction });
 
-    const [first, additional] = [quote.lines[0], quote.lines[1]];
+      const [first, additional] = [quote.lines[0], quote.lines[1]];
 
-    await PoliceClearanceOrderDetails.create(
-      {
-        order_id: order.id,
-        police_clearance_id: input.clearanceId,
-        clearance_price: centsToLegacyString(first?.totalCents ?? null),
-        basic_additional_price: centsToLegacyString(additional?.unitCents ?? null),
-        clearance_additional_price: centsToLegacyString(
-          additional?.totalCents ?? null
-        ),
-        /**
-         * `0` here, unlike its sibling detail tables — deliberately.
-         *
-         * The DL and voucher detail rows are written `1` because their readers
-         * filter on it. `ApplicationPoliceClearanceController` never sets this
-         * column at all, and no reader filters on it, so there is no `1` to
-         * match. Left explicit so it does not read as an oversight next to the
-         * two rows above it.
-         */
-        status: 0,
-      },
-      { transaction }
-    );
+      await PoliceClearanceOrderDetails.create(
+        {
+          order_id: order.id,
+          police_clearance_id: input.clearanceId,
+          clearance_price: centsToLegacyString(first?.totalCents ?? null),
+          basic_additional_price: centsToLegacyString(additional?.unitCents ?? null),
+          clearance_additional_price: centsToLegacyString(additional?.totalCents ?? null),
+          /**
+           * `0` here, unlike its sibling detail tables — deliberately.
+           *
+           * The DL and voucher detail rows are written `1` because their readers
+           * filter on it. `ApplicationPoliceClearanceController` never sets this
+           * column at all, and no reader filters on it, so there is no `1` to
+           * match. Left explicit so it does not read as an oversight next to the
+           * two rows above it.
+           */
+          status: 0,
+        },
+        { transaction }
+      );
 
-    await createApplicants(order.id, input.applicants, transaction);
-    await createReturnAddress(order.id, input.returnAddress, transaction);
+      await createApplicants(order.id, input.applicants, transaction);
+      await createReturnAddress(order.id, input.returnAddress, transaction);
 
-    return finish(order, quote);
-  }).then(async (lodged) => {
-    // After the commit: see `recordOrderNote` for why this cannot be inside it.
-    await recordOrderNote(lodged.orderId, input.notes);
-    return lodged;
-  });
+      return finish(order, quote);
+    })
+    .then(async (lodged) => {
+      // After the commit: see `recordOrderNote` for why this cannot be inside it.
+      await recordOrderNote(lodged.orderId, input.notes);
+      return lodged;
+    });
 };
 
 // ---------------------------------------------------------------------------
@@ -519,11 +516,32 @@ export interface VoucherOrderInput {
 }
 
 /**
+ * `voucher_col`, numbered as the old application numbers the fee columns.
+ *
+ * Not the order the API lists the tiers in. The number is the value of the radio
+ * on the old voucher form, which draws the invitation table's three speeds first
+ * and the business table's two after them: `RussianVisaVoucher/step_three.html.twig`
+ * writes `id:1` to `id:5` for 3 days, 1-2 days, 12 hours, 13 days and 4 days, and
+ * reads the same numbers back to re-check the radio on a saved order.
+ *
+ * Taking the tier's position in `VOUCHER_TIER_IDS` instead — the schema's column
+ * order, which starts at `thirteen_days` — wrote a 13-day order as `1`, and `1` is
+ * the number that form reads as "3 days processing". A consultant reading the
+ * order back saw a turnaround the client never bought.
+ */
+const VOUCHER_COL: Record<VoucherTier, number> = {
+  'three-days': 1,
+  'one-two-days': 2,
+  'twelve-hours': 3,
+  'thirteen-days': 4,
+  'four-days': 5,
+};
+
+/**
  * The Russian voucher.
  *
- * `voucher_col` records which processing tier was bought. The column is an
- * integer and the tiers are the five fee columns, so the tier's position in the
- * published order is stored — that is how the old application reads it back.
+ * `voucher_col` records which processing tier was bought, as the integer the old
+ * application's own form numbers that column with — see `VOUCHER_COL`.
  */
 export const lodgeVoucherOrder = async (
   input: VoucherOrderInput
@@ -534,9 +552,6 @@ export const lodgeVoucherOrder = async (
     applicants: input.applicants.length,
     courierOptionId: input.courierOptionId,
   });
-
-  const { VOUCHER_TIER_IDS } = await import('../../domain/quotes');
-  const tierIndex = VOUCHER_TIER_IDS.indexOf(input.tier) + 1;
 
   return sequelize.transaction(async (transaction) => {
     const order = await createHeader(
@@ -554,16 +569,13 @@ export const lodgeVoucherOrder = async (
       transaction
     );
 
-    await order.update(
-      { russian_visa_voucher_id: input.voucherTypeId },
-      { transaction }
-    );
+    await order.update({ russian_visa_voucher_id: input.voucherTypeId }, { transaction });
 
     await RussianVisaVoucherOrderDetails.create(
       {
         order_id: order.id,
         russian_visa_voucher_id: input.voucherTypeId,
-        voucher_col: tierIndex,
+        voucher_col: VOUCHER_COL[input.tier],
         voucher_col_cost: centsToLegacyString(quote.lines[0]?.unitCents ?? null),
         first_entry_date: dateOnlyForWrite(input.entryDate),
         first_departure_date: dateOnlyForWrite(input.departureDate),
@@ -633,158 +645,160 @@ export const lodgeLegalisationOrder = async (
 ): Promise<LodgedOrder> => {
   const quote = await quoteLegalisation(input.destinationCountryId ?? null);
 
-  return sequelize.transaction(async (transaction) => {
-    const order = await createHeader(
-      {
-        clientId: input.clientId,
-        orderType: ORDER_TYPE.DOCUMENT_LEGALISATION,
-        // Quoted, not charged — lodging it is the place-order step.
-        placed: true,
-        contact: input.contact,
-        destinationCountryId: input.destinationCountryId,
-        applicants: input.applicants ?? [],
-        courierOptionId: input.courierOptionId,
-        quote,
-      },
-      transaction
-    );
+  return sequelize
+    .transaction(async (transaction) => {
+      const order = await createHeader(
+        {
+          clientId: input.clientId,
+          orderType: ORDER_TYPE.DOCUMENT_LEGALISATION,
+          // Quoted, not charged — lodging it is the place-order step.
+          placed: true,
+          contact: input.contact,
+          destinationCountryId: input.destinationCountryId,
+          applicants: input.applicants ?? [],
+          courierOptionId: input.courierOptionId,
+          quote,
+        },
+        transaction
+      );
 
-    /**
-     * A legalisation order gets a destination row, and it is not optional.
-     *
-     * `docLegalisation.html.twig` interpolates `{{orderData.travels.id}}`
-     * **unguarded** in seventeen places — line 117's `shippedBy[…]` is the first
-     * — and `travels` is this row, flattened. With none, opening the order in
-     * CLS's admin is a Twig 500.
-     *
-     * It is only this template: the clearance, voucher and document-delivery
-     * views all guard with `is defined`, and their legacy controllers
-     * correspondingly do not write a destination row.
-     * `ApplicationDocumentLegalisationController:148-160` does, with exactly
-     * these four fields.
-     */
-    await ClsOrderDestinations.create(
-      {
-        order_id: order.id,
-        country_id: input.destinationCountryId ?? null,
-        nationality: input.nationalityCountryId ?? null,
-        status: 1,
-      },
-      { transaction }
-    );
-
-    await DocumentLegalizationOrderDetails.create(
-      {
-        order_id: order.id,
-        destination: input.destinationCountryId ?? null,
-        nationality: input.nationalityCountryId ?? null,
-        ref_no: clean(input.clientReference),
-        com_invoice_no: clean(input.commercialInvoiceNumber),
-        /**
-         * `1`, not `0`, and it is load-bearing.
-         *
-         * `status` on these detail tables is not a workflow state — it is an
-         * "this row counts" flag, and the reader enforces it:
-         * `getDLOrderDetailsByOrderId` is
-         * `WHERE ddod.status = 1 AND ddod.order_id = :orderId`. Written as `0`
-         * the row exists and the admin cannot see it, so the DL view rendered
-         * `dl_order_details => array()` and lost the destination, nationality,
-         * reference and commercial invoice number.
-         * `ApplicationDocumentLegalisationController:179` writes `1`.
-         */
-        status: 1,
-      },
-      { transaction }
-    );
-
-    /**
-     * The document lines go to `tbl_order_dl_checklist`, not to
-     * `tbl_document_legalization_documents`.
-     *
-     * That looks like the wrong table and is the right one. Both exist; only one
-     * is read. **`tbl_document_legalization_documents` has no reader anywhere in
-     * the legacy codebase** — grep it — while `tbl_order_dl_checklist` is what
-     * every DL screen uses:
-     *
-     * - `CLSadminBundle` `docLegalisation.html.twig:499` renders
-     *   `orderData.order_dl_checklist`, and `ViewOrderController:3441` writes the
-     *   consultant's edits back into those same rows;
-     * - `GlobalController::getOrderDLChecklistsByOrderId` loads them with
-     *   `WHERE dlc.order_no = :orderId`, passing the **`tbl_cls_order.id`**;
-     * - CLS's own new API (`Acme/cls-node-api`) writes here too.
-     *
-     * Writing the other table meant an attestation order appeared in the admin's
-     * DL queue — the details row is what that list joins — and then opened with
-     * an empty document checklist.
-     *
-     * `order_no` holding a `tbl_cls_order.id` is the legacy id-collision hazard
-     * and is unavoidable: it is the key the admin reads by.
-     */
-    await Promise.all(
-      input.documents.map((document) =>
-        OrderDlChecklist.create(
-          {
-            order_no: order.id,
-            type: document.documentType,
-            number: document.quantity,
-            note: clean(document.note),
-          },
-          { transaction }
-        )
-      )
-    );
-
-    /**
-     * A legalisation order always gets a traveller row, even with no applicants.
-     *
-     * The attestation journey does not collect applicants — a document is being
-     * legalised, not a person travelling — so this used to write none. That is a
-     * shape the old admin cannot render: its DL view does
-     *
-     * ```php
-     * $orderData['travellers'] = $orderData['order_travellers'][0] ?: [];
-     * ```
-     *
-     * (`ViewOrderController:3527`) and the template then reads
-     * `orderData.travellers.first_name` unguarded at `docLegalisation.html.twig:39`.
-     * With no rows that is `[]`, and opening the order **fatals with a Twig
-     * "Item first_name for Array does not exist"** — a 500 on a real order a
-     * consultant has been asked to work.
-     *
-     * The old application never hits it because it always writes exactly one row
-     * from the order contact (`ApplicationDocumentLegalisationController:195-210`),
-     * flagged primary and `is_client = 1` — for a legalisation the contact *is*
-     * the client. This does the same.
-     */
-    if (input.applicants && input.applicants.length > 0) {
-      await createApplicants(order.id, input.applicants, transaction);
-    } else {
-      await OrderTravellerDetails.create(
+      /**
+       * A legalisation order gets a destination row, and it is not optional.
+       *
+       * `docLegalisation.html.twig` interpolates `{{orderData.travels.id}}`
+       * **unguarded** in seventeen places — line 117's `shippedBy[…]` is the first
+       * — and `travels` is this row, flattened. With none, opening the order in
+       * CLS's admin is a Twig 500.
+       *
+       * It is only this template: the clearance, voucher and document-delivery
+       * views all guard with `is defined`, and their legacy controllers
+       * correspondingly do not write a destination row.
+       * `ApplicationDocumentLegalisationController:148-160` does, with exactly
+       * these four fields.
+       */
+      await ClsOrderDestinations.create(
         {
           order_id: order.id,
-          first_name: input.contact.firstName,
-          last_name: input.contact.lastName,
-          email: input.contact.email,
-          phone: clean(input.contact.phone),
-          organisation: clean(input.returnAddress?.company),
+          country_id: input.destinationCountryId ?? null,
           nationality: input.nationalityCountryId ?? null,
-          citizenship: input.nationalityCountryId ?? null,
-          is_primary: 1,
-          is_client: 1,
           status: 1,
         },
         { transaction }
       );
-    }
 
-    await createReturnAddress(order.id, input.returnAddress, transaction);
+      await DocumentLegalizationOrderDetails.create(
+        {
+          order_id: order.id,
+          destination: input.destinationCountryId ?? null,
+          nationality: input.nationalityCountryId ?? null,
+          ref_no: clean(input.clientReference),
+          com_invoice_no: clean(input.commercialInvoiceNumber),
+          /**
+           * `1`, not `0`, and it is load-bearing.
+           *
+           * `status` on these detail tables is not a workflow state — it is an
+           * "this row counts" flag, and the reader enforces it:
+           * `getDLOrderDetailsByOrderId` is
+           * `WHERE ddod.status = 1 AND ddod.order_id = :orderId`. Written as `0`
+           * the row exists and the admin cannot see it, so the DL view rendered
+           * `dl_order_details => array()` and lost the destination, nationality,
+           * reference and commercial invoice number.
+           * `ApplicationDocumentLegalisationController:179` writes `1`.
+           */
+          status: 1,
+        },
+        { transaction }
+      );
 
-    return finish(order, quote);
-  }).then(async (lodged) => {
-    // After the commit: see `recordOrderNote` for why this cannot be inside it.
-    await recordOrderNote(lodged.orderId, input.notes);
-    return lodged;
-  });
+      /**
+       * The document lines go to `tbl_order_dl_checklist`, not to
+       * `tbl_document_legalization_documents`.
+       *
+       * That looks like the wrong table and is the right one. Both exist; only one
+       * is read. **`tbl_document_legalization_documents` has no reader anywhere in
+       * the legacy codebase** — grep it — while `tbl_order_dl_checklist` is what
+       * every DL screen uses:
+       *
+       * - `CLSadminBundle` `docLegalisation.html.twig:499` renders
+       *   `orderData.order_dl_checklist`, and `ViewOrderController:3441` writes the
+       *   consultant's edits back into those same rows;
+       * - `GlobalController::getOrderDLChecklistsByOrderId` loads them with
+       *   `WHERE dlc.order_no = :orderId`, passing the **`tbl_cls_order.id`**;
+       * - CLS's own new API (`Acme/cls-node-api`) writes here too.
+       *
+       * Writing the other table meant an attestation order appeared in the admin's
+       * DL queue — the details row is what that list joins — and then opened with
+       * an empty document checklist.
+       *
+       * `order_no` holding a `tbl_cls_order.id` is the legacy id-collision hazard
+       * and is unavoidable: it is the key the admin reads by.
+       */
+      await Promise.all(
+        input.documents.map((document) =>
+          OrderDlChecklist.create(
+            {
+              order_no: order.id,
+              type: document.documentType,
+              number: document.quantity,
+              note: clean(document.note),
+            },
+            { transaction }
+          )
+        )
+      );
+
+      /**
+       * A legalisation order always gets a traveller row, even with no applicants.
+       *
+       * The attestation journey does not collect applicants — a document is being
+       * legalised, not a person travelling — so this used to write none. That is a
+       * shape the old admin cannot render: its DL view does
+       *
+       * ```php
+       * $orderData['travellers'] = $orderData['order_travellers'][0] ?: [];
+       * ```
+       *
+       * (`ViewOrderController:3527`) and the template then reads
+       * `orderData.travellers.first_name` unguarded at `docLegalisation.html.twig:39`.
+       * With no rows that is `[]`, and opening the order **fatals with a Twig
+       * "Item first_name for Array does not exist"** — a 500 on a real order a
+       * consultant has been asked to work.
+       *
+       * The old application never hits it because it always writes exactly one row
+       * from the order contact (`ApplicationDocumentLegalisationController:195-210`),
+       * flagged primary and `is_client = 1` — for a legalisation the contact *is*
+       * the client. This does the same.
+       */
+      if (input.applicants && input.applicants.length > 0) {
+        await createApplicants(order.id, input.applicants, transaction);
+      } else {
+        await OrderTravellerDetails.create(
+          {
+            order_id: order.id,
+            first_name: input.contact.firstName,
+            last_name: input.contact.lastName,
+            email: input.contact.email,
+            phone: clean(input.contact.phone),
+            organisation: clean(input.returnAddress?.company),
+            nationality: input.nationalityCountryId ?? null,
+            citizenship: input.nationalityCountryId ?? null,
+            is_primary: 1,
+            is_client: 1,
+            status: 1,
+          },
+          { transaction }
+        );
+      }
+
+      await createReturnAddress(order.id, input.returnAddress, transaction);
+
+      return finish(order, quote);
+    })
+    .then(async (lodged) => {
+      // After the commit: see `recordOrderNote` for why this cannot be inside it.
+      await recordOrderNote(lodged.orderId, input.notes);
+      return lodged;
+    });
 };
 
 // ---------------------------------------------------------------------------
@@ -818,9 +832,7 @@ export interface VisaOrderInput {
  * visa journey collects a single destination — and the table's shape leaves room
  * for the multi-destination case without this code pretending to handle it.
  */
-export const lodgeVisaOrder = async (
-  input: VisaOrderInput
-): Promise<LodgedOrder> => {
+export const lodgeVisaOrder = async (input: VisaOrderInput): Promise<LodgedOrder> => {
   /**
    * Priced only when the visa type is known.
    *
@@ -842,76 +854,75 @@ export const lodgeVisaOrder = async (
           courierOptionId: input.courierOptionId,
         });
 
-  return sequelize.transaction(async (transaction) => {
-    const order = await createHeader(
-      {
-        clientId: input.clientId,
-        orderType: ORDER_TYPE.PUBLIC_VISA,
-        // Quoted by a consultant — lodging it is the place-order step.
-        placed: true,
-        contact: input.contact,
-        destinationCountryId: input.destinationCountryId,
-        departureDate: input.departureDate,
-        applicants: input.applicants,
-        courierOptionId: input.courierOptionId,
-        quote,
-      },
-      transaction
-    );
+  return sequelize
+    .transaction(async (transaction) => {
+      const order = await createHeader(
+        {
+          clientId: input.clientId,
+          orderType: ORDER_TYPE.PUBLIC_VISA,
+          // Quoted by a consultant — lodging it is the place-order step.
+          placed: true,
+          contact: input.contact,
+          destinationCountryId: input.destinationCountryId,
+          departureDate: input.departureDate,
+          applicants: input.applicants,
+          courierOptionId: input.courierOptionId,
+          quote,
+        },
+        transaction
+      );
 
-    if (input.visaTypeId !== null) {
-      await order.update(
-        { visa_type: String(input.visaTypeId) },
+      if (input.visaTypeId !== null) {
+        await order.update({ visa_type: String(input.visaTypeId) }, { transaction });
+      }
+
+      await ClsOrderDestinations.create(
+        {
+          order_id: order.id,
+          country_id: input.destinationCountryId,
+          visa_type_id: input.visaTypeId,
+          // Null is a legitimate value here: the destination is recorded and the
+          // type is confirmed later.
+          entry_option: input.entryOption ?? null,
+          process_location_id: input.processLocationId ?? null,
+          nationality: input.applicants[0]?.nationalityId ?? null,
+          departure_date: dateOnlyForWrite(input.departureDate),
+          entry_date_country: dateOnlyForWrite(input.entryDate),
+          departure_date_country: dateOnlyForWrite(input.exitDate),
+          travel_purpose: clean(input.travelPurpose),
+          selected_visa_type_price: centsToLegacyString(
+            quote.lines[0]?.unitCents ?? null
+          ),
+          // `VisaInformationController.php:835` and the gov controllers all write
+          // `1` here. No reader filters on it today, but the value is the old
+          // application's and there is no reason for ours to differ.
+          status: 1,
+        },
         { transaction }
       );
-    }
 
-    await ClsOrderDestinations.create(
-      {
-        order_id: order.id,
-        country_id: input.destinationCountryId,
-        visa_type_id: input.visaTypeId,
-        // Null is a legitimate value here: the destination is recorded and the
-        // type is confirmed later.
-        entry_option: input.entryOption ?? null,
-        process_location_id: input.processLocationId ?? null,
-        nationality: input.applicants[0]?.nationalityId ?? null,
-        departure_date: dateOnlyForWrite(input.departureDate),
-        entry_date_country: dateOnlyForWrite(input.entryDate),
-        departure_date_country: dateOnlyForWrite(input.exitDate),
-        travel_purpose: clean(input.travelPurpose),
-        selected_visa_type_price: centsToLegacyString(
-          quote.lines[0]?.unitCents ?? null
-        ),
-        // `VisaInformationController.php:835` and the gov controllers all write
-        // `1` here. No reader filters on it today, but the value is the old
-        // application's and there is no reason for ours to differ.
-        status: 1,
-      },
-      { transaction }
-    );
+      await createApplicants(order.id, input.applicants, transaction);
+      await createReturnAddress(order.id, input.returnAddress, transaction);
 
-    await createApplicants(order.id, input.applicants, transaction);
-    await createReturnAddress(order.id, input.returnAddress, transaction);
-
-    return { lodged: finish(order, quote), order };
-  }).then(async ({ lodged, order }) => {
-    /**
-     * The document checklist, derived from the catalogue.
-     *
-     * After the commit rather than inside it, because the read it does spans the
-     * category tables and the write is a `bulkCreate` — holding the order's
-     * transaction open across both buys nothing, and the materialiser is
-     * idempotent so a failure here is retried the next time anybody opens the
-     * order.
-     *
-     * The old application does this after the *payment*. A corporate visa is
-     * quoted rather than charged, so there is no payment to hang it on and
-     * lodgement is the equivalent moment. Where the visa type is still to be
-     * confirmed by a consultant, no category resolves and no checklist is
-     * written — see `domain/checklist`.
-     */
-    await materialiseChecklistQuietly(order);
-    return lodged;
-  });
+      return { lodged: finish(order, quote), order };
+    })
+    .then(async ({ lodged, order }) => {
+      /**
+       * The document checklist, derived from the catalogue.
+       *
+       * After the commit rather than inside it, because the read it does spans the
+       * category tables and the write is a `bulkCreate` — holding the order's
+       * transaction open across both buys nothing, and the materialiser is
+       * idempotent so a failure here is retried the next time anybody opens the
+       * order.
+       *
+       * The old application does this after the *payment*. A corporate visa is
+       * quoted rather than charged, so there is no payment to hang it on and
+       * lodgement is the equivalent moment. Where the visa type is still to be
+       * confirmed by a consultant, no category resolves and no checklist is
+       * written — see `domain/checklist`.
+       */
+      await materialiseChecklistQuietly(order);
+      return lodged;
+    });
 };
