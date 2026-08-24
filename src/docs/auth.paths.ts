@@ -14,6 +14,16 @@ import { body, f, okObject, okRef, operation } from './shared';
 
 const tag = 'Authentication';
 
+/**
+ * Where a confirmation is actually recorded, said once.
+ *
+ * Both verify-email operations need it and it is the one thing an integrator
+ * cannot guess from the endpoint: there is no `email_verified` column and one
+ * cannot be added, so the answer lives in a column the other application owns.
+ */
+const VERIFY_NOTE =
+  '\n\nThere is no `email_verified` column on `tbl_user_client` and the schema is fixed, so a confirmation is recorded by clearing `activation_code` — the same column the Acme application reads to decide whether an account is verified. `SignedInUser.emailVerified` is derived from it.';
+
 export const authPaths = {
   '/api/auth/login': {
     post: operation('/api/auth/login', {
@@ -53,7 +63,7 @@ export const authPaths = {
       tag,
       summary: 'Create a client account',
       description:
-        'Inserts into `tbl_user_client` and returns a session, so the client can carry on with what they were doing. An account number is generated for `display_id`.\n\nThat column has no unique index and one cannot be added, so the duplicate-email check is not atomic — see the notes in `auth.service.ts`.',
+        'Inserts into `tbl_user_client` and returns a session, so the client can carry on with what they were doing. An account number is generated for `display_id`.\n\n`email` has no unique index and one cannot be added, so the duplicate-email check is not atomic — see the notes in `auth.service.ts`.\n\nThe account is created **unconfirmed**: a code goes into `activation_code` and comes back as `verificationToken` for the caller to email, the same way `forgot-password` hands back a reset token. The session comes back beside it — `user.emailVerified` is false until the link is followed, which is the caller’s cue to ask rather than to bar.',
       body: {
         schema: body(
           {
@@ -73,8 +83,20 @@ export const authPaths = {
         ),
       },
       responses: {
-        201: okRef('Registered and signed in', 'Session'),
+        201: okObject('Registered and signed in', {
+          accessToken: { type: 'string' },
+          refreshToken: { type: 'string' },
+          expiresIn: { type: 'integer' },
+          user: { $ref: '#/components/schemas/SignedInUser' },
+          verificationToken: {
+            type: 'string',
+            description:
+              'The confirmation code, for the caller to put in the email link. Never rendered anywhere.',
+          },
+          verificationName: { type: 'string', nullable: true },
+        }),
         409: { description: 'That address is already registered' },
+        429: { $ref: '#/components/responses/TooManyRequests' },
         503: { $ref: '#/components/responses/ReadOnly' },
       },
     }),
@@ -179,15 +201,44 @@ export const authPaths = {
   '/api/auth/verify-email': {
     post: operation('/api/auth/verify-email', {
       tag,
-      summary: 'Send an email verification token',
+      summary: 'Confirm an email address',
       description:
-        'Returns the token for the caller to email, the same way `forgot-password` does. There is no `email_verified` column on `tbl_user_client`, so verification is recorded in the only place available — see the notes on the GET below.',
+        'Redeems the code from the confirmation email. `activation_code` is cleared on success, which is what makes a link single-use — so a replay is indistinguishable from a forgery from here, and one message covers both.' +
+        VERIFY_NOTE,
+      body: { schema: body({ token: f.string() }, ['token']) },
+      responses: {
+        200: okObject('Confirmed', {
+          message: { type: 'string' },
+          email: { type: 'string', nullable: true },
+          name: { type: 'string', nullable: true },
+        }),
+        400: { description: 'The code is unknown, or has already been used' },
+        429: { $ref: '#/components/responses/TooManyRequests' },
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
+  '/api/auth/resend-verification': {
+    post: operation('/api/auth/resend-verification', {
+      tag,
+      summary: 'Resend a confirmation link',
+      description:
+        'Issues a fresh code and returns it for the caller to email. Authenticated rather than keyed on an address, so — unlike `forgot-password` — there is no account to be probed here and no need for a uniform answer to hide one.\n\nThe previous code stops working, so a client who asks twice is not left with two live links and only one that works. An account that is already confirmed gets the same answer with no token: nothing to send is not a failure.',
       auth: 'bearer',
       responses: {
-        200: okObject('A token to email', {
+        200: okObject('A link is on its way, if one was needed', {
           message: { type: 'string' },
-          token: { type: 'string', nullable: true },
+          verificationToken: {
+            type: 'string',
+            description:
+              'Absent when the address was already confirmed. Never rendered anywhere.',
+          },
+          email: { type: 'string' },
+          name: { type: 'string', nullable: true },
         }),
+        429: { $ref: '#/components/responses/TooManyRequests' },
+        503: { $ref: '#/components/responses/ReadOnly' },
       },
     }),
   },
@@ -226,24 +277,24 @@ export const authVerifyEmailGet = {
     tag,
     summary: 'Confirm an email address from the link',
     description:
-      'The link in the verification email points here, so it has to work as a GET from a mail client with no token header.\n\n`tbl_user_client` has no `email_verified` column and one cannot be added, so a confirmation is recorded against the account’s existing fields rather than as its own flag. The response says plainly what was and was not stored.',
+      'The same redemption as the POST, reachable as a GET so the link can be followed straight from a mail client \u2014 which sends no session and no headers of its own.' +
+      VERIFY_NOTE,
     query: [
       {
         name: 'token',
-        description: 'The signed token from the verification email.',
+        description: 'The confirmation code from the email.',
         required: true,
       },
     ],
     responses: {
       200: okObject('Confirmed', {
         message: { type: 'string' },
-        verified: { type: 'boolean' },
-        persisted: {
-          type: 'boolean',
-          description: 'False when the schema had nowhere to record the confirmation.',
-        },
+        email: { type: 'string', nullable: true },
+        name: { type: 'string', nullable: true },
       }),
-      410: { description: 'The token expired' },
+      400: { description: 'The code is unknown, or has already been used' },
+      429: { $ref: '#/components/responses/TooManyRequests' },
+      503: { $ref: '#/components/responses/ReadOnly' },
     },
   }),
 } as const;
