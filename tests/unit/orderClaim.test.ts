@@ -119,6 +119,22 @@ describe('claim', () => {
     expect(stored.password).toMatch(/^\$2[aby]?\$\d{2}\$/);
   });
 
+  it('leaves activation_code null, so the account can sign in to Acme too', async () => {
+    findByPk.mockResolvedValue(guestOrder());
+    findAnyClientByEmail.mockResolvedValue(null);
+
+    await claim('CLS-001482');
+
+    const stored = createClient.mock.calls[0][0] as { activationCode: unknown };
+
+    // This used to be random bytes. The Acme client login reads a non-empty
+    // activation_code as an unconfirmed email address and refuses the sign-in,
+    // and nothing in this stack ever clears it -- the claim emails a password,
+    // not a confirmation link. So the code confirmed nothing and locked the
+    // client out of the site CLS staff still use.
+    expect(stored.activationCode).toBeNull();
+  });
+
   it('takes the row lock, so two callers cannot both create an account', async () => {
     findByPk.mockResolvedValue(guestOrder());
     findAnyClientByEmail.mockResolvedValue(null);

@@ -70,8 +70,13 @@ const schema = z.object({
     .string()
     .min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
+  /**
+   * `md5x2` is the Acme scheme, `md5(md5($password))`, and what nearly every
+   * pre-existing row holds. `auto` finds it without being told, so pin this only
+   * to rule the others out.
+   */
   LEGACY_PASSWORD_ALGO: z
-    .enum(['auto', 'bcrypt', 'md5', 'sha1', 'sha256'])
+    .enum(['auto', 'bcrypt', 'md5x2', 'md5', 'sha1', 'sha256'])
     .default('auto'),
   LEGACY_PASSWORD_REHASH: booleanish(false),
 

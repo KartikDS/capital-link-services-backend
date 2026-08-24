@@ -156,15 +156,64 @@ Clients live in `tbl_user_client` and staff in `tbl_user_admin` — separate tab
 with no shared key — so a token records which table it came from and admin routes
 accept only the `admin` audience.
 
-**Existing passwords may be bcrypt, MD5, SHA-1 or SHA-256.** The schema does not
-say which; all are verified so five years of clients can sign in with the
-password they already have. New passwords are always bcrypt. Set
+**Existing passwords may be bcrypt, double MD5, MD5, SHA-1 or SHA-256.** The
+schema does not say which; all are verified so five years of clients can sign in
+with the password they already have. New passwords are always bcrypt. Set
 `LEGACY_PASSWORD_ALGO` once `npm run db:check` has told you the format, or leave
 it on `auto`.
 
 Every sign-in failure returns the same message, and the password is verified even
 when no account was found — otherwise the response time tells an attacker which
 addresses are registered.
+
+### One login, two applications
+
+The Acme Symfony site and this API authenticate **the same rows** —
+`tbl_user_client` and `tbl_user_admin` — and write passwords differently. Both
+sides have to understand both formats or half the accounts cannot sign in.
+
+| | writes | verifies |
+|---|---|---|
+| Acme (`GlobalModel`) | `md5(md5($password))` | that, and bcrypt |
+| this API | bcrypt, cost 12 | that, `md5(md5())`, MD5, SHA-1, SHA-256 |
+
+Two things make it work, and they ship together:
+
+- **`md5x2` here.** `md5(md5($password))` is what `passGenerator()` wrote, and it
+  is 32 hex characters — the same shape as a plain MD5. Verifying only the
+  single digest against it is why accounts created on the Acme site were refused
+  here.
+- **Fetch-then-verify there.** All four Acme login paths compared the hash inside
+  the `WHERE` clause. bcrypt is salted, so the same password hashes differently
+  every time and `WHERE password = ?` can never match one — which is why
+  accounts created here were refused there. They now read the row by email and
+  call `GlobalModel::verifyPassword()`. `matchPassword()` scans every row for the
+  address, because `email` has no unique index.
+
+`$2b$` vs `$2y$`: bcryptjs emits `$2b$`, and PHP's bundled crypt rejects that
+prefix on older builds — returning a failure string, which reads as "wrong
+password". `verifyBcryptHash()` relabels it to `$2y$`, the same algorithm under a
+prefix every PHP since 5.3.7 accepts.
+
+**Deploy both halves together.** Shipping this API alone leaves Acme unable to
+read bcrypt; shipping the Acme patch alone is harmless but fixes nothing.
+
+`LEGACY_PASSWORD_REHASH` upgrades a legacy hash to bcrypt on a successful
+sign-in, and is safe to turn on **only once the Acme patch is live** — before
+that it migrates a client to bcrypt and locks them out of the Acme site. Leaving
+it off is fine: nothing breaks, the rows simply stay double MD5. Note that Acme
+still *writes* `md5(md5())` on a password change or reset, so a rehashed account
+can go back to the legacy format. That is survivable in both directions and is
+why the rehash is an optimisation rather than a migration.
+
+**`activation_code` is written null.** The Acme client login refuses any row
+whose `activation_code` is not empty, with "Your account is not verified."
+Registration here used to fill it with random bytes while nothing in the stack
+ever sent a confirmation link — the welcome email has none and the website has no
+verify-email page — so it confirmed nothing and permanently locked new accounts
+out of Acme. `POST /api/auth/verify-email` still works, for legacy rows carrying
+a code Acme issued. If email confirmation is wanted later, build the link and the
+page first; the column is only meaningful once something can clear it.
 
 ## Errors
 

@@ -2,6 +2,7 @@ import path from 'node:path';
 import {
   ClsOrder,
   ClsOrderDocuments,
+  OrderDlChecklist,
   OrderNotes,
   OrderTravellerDetails,
   UserClient,
@@ -114,41 +115,114 @@ export const attachDocuments = async (
   const primary =
     travellers.find((traveller) => traveller.is_primary === 1) ?? travellers[0];
 
-  const created = await Promise.all(
-    files.map((file) =>
-      ClsOrderDocuments.create({
-        order_id: orderId,
-        country_id: scope.countryId,
-        visa_type_id: scope.visaTypeId,
-        entry_option: scope.entryOption,
-        process_location_id: scope.processLocationId,
-        nationality: scope.nationality,
-        region: scope.region,
-        traveller_id: primary?.id ?? null,
-        // Relative to UPLOAD_DIR, matching how the old application stores paths.
-        document: path.relative(
-          path.resolve(process.env.UPLOAD_DIR ?? './uploads'),
-          file.path
-        ).replace(/\\/g, '/'),
-        status: DOCUMENT_STATUS.UPLOADED,
-        created: now,
-        modified: now,
-      })
-    )
-  );
+  /**
+   * The declared lines this order is still waiting on files for.
+   *
+   * A legalisation order's documents are declared before they are sent: the form
+   * collects "Birth Certificate Attestation ×1" as a checklist line and the scans
+   * separately. The old application then joins the two by having the client click
+   * upload *on a line* — `DocumentUploadsController::uploadDocAction` sets
+   * `doc_file` on that exact row and never inserts.
+   *
+   * Ours could not, so both halves showed on the portal at once: the line as
+   * "UPLOAD NEEDED — Files to follow: itinerary4.jpg" and the file beside it as a
+   * loose "RECEIVED" row. The same document, twice, in two different states.
+   *
+   * The join is recoverable because the website writes the filenames it is
+   * expecting into the line's own note (`Files to follow: …`), so an arriving
+   * file can be matched back to the line that declared it.
+   */
+  const declared = await OrderDlChecklist.findAll({
+    where: { order_no: orderId, doc_file: null },
+    order: [['id', 'ASC']],
+  });
+
+  const claimed = new Set<number>();
+
+  /**
+   * The line that declared this file, or null.
+   *
+   * Matched on the client's own filename appearing in the note, and **only when
+   * exactly one unclaimed line mentions it**. Two lines naming the same file, or
+   * none, fall through to a loose row — attaching a birth certificate to the
+   * passport line because it was the nearest guess would tell a consultant
+   * something untrue about the order.
+   */
+  const declaredFor = (originalName: string): OrderDlChecklist | null => {
+    const needle = clean(originalName)?.toLowerCase();
+    if (!needle) return null;
+
+    const matches = declared.filter(
+      (row) =>
+        !claimed.has(row.id) && (clean(row.note)?.toLowerCase().includes(needle) ?? false)
+    );
+
+    return matches.length === 1 ? (matches[0] ?? null) : null;
+  };
+
+  const attached: AttachedDocument[] = [];
+
+  /**
+   * Sequential, not `Promise.all`.
+   *
+   * Two files can name the same declared line, and `claimed` is what stops them
+   * both taking it. Resolving the matches concurrently would have each read the
+   * set before the other wrote to it, and one line would silently swallow both
+   * uploads.
+   */
+  for (const file of files) {
+    // Relative to UPLOAD_DIR, matching how the old application stores paths.
+    const stored = path
+      .relative(path.resolve(process.env.UPLOAD_DIR ?? './uploads'), file.path)
+      .replace(/\\/g, '/');
+
+    const line = declaredFor(file.originalname);
+
+    if (line) {
+      claimed.add(line.id);
+      await line.update({ doc_file: stored });
+
+      attached.push({
+        id: `dl-${line.id}`,
+        name: clean(line.type) ?? file.originalname,
+        storedAs: stored,
+        state: 'received',
+      });
+
+      continue;
+    }
+
+    const row = await ClsOrderDocuments.create({
+      order_id: orderId,
+      country_id: scope.countryId,
+      visa_type_id: scope.visaTypeId,
+      entry_option: scope.entryOption,
+      process_location_id: scope.processLocationId,
+      nationality: scope.nationality,
+      region: scope.region,
+      traveller_id: primary?.id ?? null,
+      document: stored,
+      status: DOCUMENT_STATUS.UPLOADED,
+      created: now,
+      modified: now,
+    });
+
+    attached.push({
+      id: String(row.id),
+      // The client's own filename, echoed back but not stored — see above.
+      name: file.originalname || (clean(row.document) ?? 'Document'),
+      storedAs: stored,
+      state: 'received',
+    });
+  }
 
   logger.info('Documents attached', {
     orderId,
-    count: created.length,
+    count: attached.length,
+    filledDeclaredLines: claimed.size,
   });
 
-  return created.map((row, index) => ({
-    id: String(row.id),
-    // The client's own filename, echoed back but not stored — see above.
-    name: files[index]?.originalname ?? clean(row.document) ?? 'Document',
-    storedAs: clean(row.document) ?? '',
-    state: 'received',
-  }));
+  return attached;
 };
 
 // ---------------------------------------------------------------------------

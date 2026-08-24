@@ -331,6 +331,30 @@ export const findConsultant = (id: number | null): Promise<UserAdmin | null> => 
   return UserAdmin.findByPk(id);
 };
 
+/**
+ * The consultants on a set of orders, in one query.
+ *
+ * For the list screens. `findConsultant` per row would be an N+1 against
+ * `tbl_user_admin`, and a client's dashboard renders every order they have — so
+ * the distinct staff ids are collected and looked up together.
+ *
+ * Returns a map keyed by admin id. Ids with no row are simply absent, which is
+ * the same "unassigned" answer as a null `visa_cls_team_member`: staff rows do
+ * get deleted, and an order pointing at a gone one has no consultant rather than
+ * a broken card.
+ */
+export const findConsultants = async (
+  ids: readonly (number | null)[]
+): Promise<Map<number, UserAdmin>> => {
+  const wanted = [...new Set(ids.filter((id): id is number => Boolean(id)))];
+
+  if (wanted.length === 0) return new Map();
+
+  const rows = await UserAdmin.findAll({ where: { id: { [Op.in]: wanted } } });
+
+  return new Map(rows.map((row) => [row.id, row]));
+};
+
 // ---------------------------------------------------------------------------
 // Public tracking
 // ---------------------------------------------------------------------------

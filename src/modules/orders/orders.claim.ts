@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import type { Transaction } from 'sequelize';
 import { sequelize } from '../../config/database';
 import { ClsOrder, OrderTravellerDetails } from '../../models';
@@ -254,7 +253,10 @@ export const claim = async (reference: string): Promise<ClaimResult> => {
         mobile: null,
         company: null,
         displayId,
-        activationCode: crypto.randomBytes(16).toString('hex'),
+        // Null for the same reason as registration: the claim emails the client
+        // their password, never a confirmation link, so a code here would only
+        // stop them signing in to the Acme site.
+        activationCode: null,
       },
       // In the same transaction as the stamp below, so the pair is atomic: an
       // account with no order attached is a login nobody was told about.

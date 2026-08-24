@@ -140,6 +140,22 @@ export const limits = {
 
   register: rateLimit({ name: 'register', max: 5, windowMs: 60 * 60_000 }),
 
+  /**
+   * Resending a confirmation email.
+   *
+   * Keyed on the caller's IP rather than the account, because the endpoint is
+   * authenticated and the account is already known from the token. Three in a
+   * quarter of an hour: a client whose email has not arrived presses the button
+   * once, maybe twice, and each press sends real mail from CLS's mailbox --
+   * so this is as much about not turning the portal into a way of posting mail
+   * to an address as it is about the write behind it.
+   */
+  emailVerification: rateLimit({
+    name: 'email-verification',
+    max: 3,
+    windowMs: 15 * 60_000,
+  }),
+
   /** The live "is this email taken?" check, called as someone types. */
   availability: rateLimit({ name: 'availability', max: 20, windowMs: 60_000 }),
 

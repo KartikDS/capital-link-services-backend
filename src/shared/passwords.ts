@@ -16,6 +16,24 @@ import { env } from '../config/env';
  * have. That is the whole requirement: a portal that made five years of clients
  * reset their password on day one would be a portal nobody signed in to.
  *
+ * ## What the Acme application actually wrote
+ *
+ * `md5(md5($password))` — double MD5, no salt. One line, in two copies of the
+ * same file:
+ *
+ * ```php
+ * // Acme/CLSclientGovBundle/Model/GlobalModel.php (and CLSclientPublicBundle)
+ * public function passGenerator($password){
+ *     return md5(md5($password));
+ * }
+ * ```
+ *
+ * Every account opened through the Acme site carries that. Comparing a *single*
+ * MD5 against it never matches, which is exactly why those clients could not
+ * sign in here: the shape was right and the scheme was not. `md5x2` is that
+ * scheme, and it is the first thing tried on an MD5-shaped value because it is
+ * what produced nearly all of them.
+ *
  * **New hashes are always bcrypt.** The legacy formats are only ever verified,
  * never written. `LEGACY_PASSWORD_REHASH` controls whether a successful legacy
  * sign-in quietly upgrades the stored hash — off by default, because that column
@@ -26,7 +44,14 @@ import { env } from '../config/env';
 /** Work factor for new hashes. */
 const BCRYPT_ROUNDS = 12;
 
-export type PasswordAlgorithm = 'bcrypt' | 'md5' | 'sha1' | 'sha256' | 'unknown';
+export type PasswordAlgorithm =
+  | 'bcrypt'
+  /** The Acme application's `md5(md5($password))`. */
+  | 'md5x2'
+  | 'md5'
+  | 'sha1'
+  | 'sha256'
+  | 'unknown';
 
 const BCRYPT_SHAPE = /^\$2[aby]?\$\d{2}\$[./A-Za-z0-9]{53}$/;
 const HEX_32 = /^[a-f0-9]{32}$/i;
@@ -39,6 +64,11 @@ const HEX_64 = /^[a-f0-9]{64}$/i;
  * By shape rather than by trying each algorithm in turn: a 32-character hex
  * string is an MD5 digest and cannot be anything else, so there is no reason to
  * spend a bcrypt comparison finding that out.
+ *
+ * **Shape is not scheme.** `md5(md5(x))` and `md5(x)` are both 32 hex
+ * characters, so this returns `'md5'` for either and `verifyPassword` settles
+ * which by comparing. Nothing about the stored value can tell them apart; that
+ * is a property of the legacy format, not a shortcut taken here.
  */
 export const detectAlgorithm = (hash: string): PasswordAlgorithm => {
   const trimmed = hash.trim();
@@ -53,6 +83,32 @@ export const detectAlgorithm = (hash: string): PasswordAlgorithm => {
 
 const digest = (algorithm: 'md5' | 'sha1' | 'sha256', password: string): string =>
   crypto.createHash(algorithm).update(password, 'utf8').digest('hex');
+
+/**
+ * The Acme scheme, reproduced exactly: `md5(md5($password))`.
+ *
+ * The encoding is arbitrary for the outer call, whose input is ASCII hex, and it
+ * matters for the inner one. PHP's `md5()` hashes the raw bytes of the string it
+ * is handed, and every Acme template declares `charset=utf-8`, so the bytes PHP
+ * hashed were the password's UTF-8 bytes. Treating them as latin1 here would
+ * agree for ASCII passwords and silently disagree for every other one.
+ */
+const md5x2 = (password: string): string => digest('md5', digest('md5', password));
+
+/**
+ * A valid bcrypt hash that no password matches.
+ *
+ * Sign-in verifies against this when it found no account, so that an unknown
+ * address costs the same as a wrong password. It is the hash of 32 random bytes
+ * nobody kept, at the cost factor real hashes use.
+ *
+ * It has to be a *real* 60-character hash rather than a plausible-looking
+ * placeholder. `verifyPassword` shapes its work on what it detects, so a
+ * malformed value is detected as `unknown` and returns without hashing
+ * anything, which restores the very timing difference this exists to remove.
+ */
+export const NEVER_MATCHES =
+  '$2b$12$CiJq9bUjqvJyW6Mri9iPUuVGjAdSA32c8YzC1HvgqxGSY61mnQItC';
 
 /**
  * Compares two strings without leaking their difference through timing.
@@ -106,6 +162,32 @@ export const verifyPassword = async (
     return { valid, algorithm: 'bcrypt', needsUpgrade: false };
   }
 
+  if (algorithm === 'md5x2') {
+    const valid = constantTimeEqual(md5x2(password), hash);
+    return { valid, algorithm: 'md5x2', needsUpgrade: valid };
+  }
+
+  /**
+   * An MD5-shaped value, with the scheme still to be worked out.
+   *
+   * `md5x2` first, because it is what the Acme application wrote and so what
+   * almost every row holds. Plain MD5 second, for rows of other provenance — an
+   * import, a one-off admin script — that the shape cannot distinguish. The two
+   * digests together cost about a microsecond, so there is nothing to be saved
+   * by picking one.
+   *
+   * Only reached on `auto`. A deployment that pins `LEGACY_PASSWORD_ALGO=md5`
+   * has stated that plain MD5 is what its rows hold, and is taken at its word.
+   */
+  if (algorithm === 'md5' && configured === 'auto') {
+    if (constantTimeEqual(md5x2(password), hash)) {
+      return { valid: true, algorithm: 'md5x2', needsUpgrade: true };
+    }
+
+    const valid = constantTimeEqual(digest('md5', password), hash);
+    return { valid, algorithm: 'md5', needsUpgrade: valid };
+  }
+
   if (algorithm === 'md5' || algorithm === 'sha1' || algorithm === 'sha256') {
     const valid = constantTimeEqual(digest(algorithm, password), hash);
     return { valid, algorithm, needsUpgrade: valid };
@@ -118,7 +200,16 @@ export const verifyPassword = async (
 export const hashPassword = (password: string): Promise<string> =>
   bcrypt.hash(password, BCRYPT_ROUNDS);
 
-/** Whether a verified legacy hash should be replaced with bcrypt on sign-in. */
+/**
+ * Whether a verified legacy hash should be replaced with bcrypt on sign-in.
+ *
+ * Safe to turn on once the Acme login verifies bcrypt, which it does by reading
+ * the row by email and calling `GlobalModel::verifyPassword()` rather than
+ * comparing the hash inside the `WHERE` clause. Turning it on before that patch
+ * is deployed migrates a client to bcrypt and locks them out of the Acme site,
+ * which is why it stays off by default and is a deployment decision rather than
+ * a default taken here.
+ */
 export const shouldRehash = (result: VerificationResult): boolean =>
   env.auth.legacyPasswordRehash && result.valid && result.needsUpgrade;
 

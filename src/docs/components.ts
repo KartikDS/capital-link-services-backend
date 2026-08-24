@@ -76,6 +76,13 @@ export const components = {
           nullable: true,
           description: '`tbl_user_client.display_id` — the number on invoices.',
         },
+        emailVerified: {
+          type: 'boolean',
+          description:
+            'Whether the address has been confirmed. There is no `email_verified` column on `tbl_user_client`, so this is derived from `activation_code` being blank — the same column the Acme application reads. Always true for staff, who have no address to confirm.
+
+Reported, not enforced: an unconfirmed client is still issued a session, so a registration that happened mid-order can be carried on. Use it to ask them to confirm, not to bar them.',
+        },
       },
     },
 

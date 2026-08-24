@@ -5,7 +5,9 @@ import { badRequest, conflict, unauthorized } from '../../shared/errors';
 import { logger } from '../../shared/logger';
 import {
   hashPassword,
+  NEVER_MATCHES,
   newResetPin,
+  newToken,
   shouldRehash,
   verifyPassword,
 } from '../../shared/passwords';
@@ -55,6 +57,20 @@ export interface SignedInUser {
   clientType: string | null;
   company: string | null;
   accountNumber: string | null;
+  /**
+   * Whether the address on the account has been confirmed.
+   *
+   * Derived from `activation_code` being blank, because there is no
+   * `email_verified` column on `tbl_user_client` and the schema is fixed. That
+   * column is the only place either application records the answer -- see
+   * `isEmailVerified` below.
+   *
+   * Reported rather than enforced. An unconfirmed client still gets a session:
+   * registration is followed straight away by "carry on with your order", and
+   * barring them at that point strands anyone whose email is slow. The website
+   * uses this to ask them to confirm, not to lock them out.
+   */
+  emailVerified: boolean;
 }
 
 export interface Session {
@@ -65,6 +81,21 @@ export interface Session {
   user: SignedInUser;
 }
 
+/**
+ * Whether a client's address is confirmed.
+ *
+ * A blank `activation_code` means yes. That is not a convention invented here --
+ * it is what the Acme application already reads: its login refuses an account
+ * whose code is non-empty with "Your account is not verified.", and its
+ * confirmation action clears the column. Written as one function so this stack
+ * and that one cannot drift on what "verified" means.
+ *
+ * `clean` rather than a null check, because Acme writes the empty string where
+ * this stack writes null and five years of rows hold both.
+ */
+const isEmailVerified = (row: UserClient): boolean =>
+  clean(row.activation_code) === null;
+
 const clientToUser = (row: UserClient): SignedInUser => ({
   id: row.id,
   audience: 'client',
@@ -73,6 +104,7 @@ const clientToUser = (row: UserClient): SignedInUser => ({
   clientType: clean(row.type) ?? CLIENT_TYPE.PUBLIC,
   company: clean(row.company),
   accountNumber: clean(row.display_id) ?? clean(row.account_no),
+  emailVerified: isEmailVerified(row),
 });
 
 const adminToUser = (row: UserAdmin): SignedInUser => ({
@@ -83,6 +115,11 @@ const adminToUser = (row: UserAdmin): SignedInUser => ({
   clientType: null,
   company: 'Capital Link Services',
   accountNumber: null,
+  // `tbl_user_admin` has no activation column. A staff account is opened by
+  // another member of staff, so there is no address to confirm and nothing to
+  // ask them for -- true rather than null, so the website has no third state to
+  // render.
+  emailVerified: true,
 });
 
 const startSession = (user: SignedInUser): Session => {
@@ -154,12 +191,12 @@ export const signIn = async (
   const admin = client ? null : await repository.findAdminByEmail(normalised);
   const row = client ?? admin;
 
-  const result = await verifyPassword(
-    password,
-    row?.password ??
-      // A bcrypt hash of a random string: never matches, costs the same to check.
-      '$2b$12$0000000000000000000000000000000000000000000000000000'
-  );
+  // `NEVER_MATCHES` rather than a hash written out here: the literal that used
+  // to be inline was 59 characters, which is not a bcrypt hash. It was detected
+  // as `unknown` and refused without hashing anything, so an unknown address
+  // answered measurably faster than a wrong password -- the exact oracle the
+  // comparison exists to close.
+  const result = await verifyPassword(password, row?.password ?? NEVER_MATCHES);
 
   if (!row || !result.valid) {
     logger.info('Sign-in refused', { email: normalised, found: Boolean(row) });
@@ -217,6 +254,26 @@ export interface RegistrationInput {
 }
 
 /**
+ * A pending email confirmation: the code stored, and who to send it to.
+ *
+ * Shaped like `beginPasswordReset`'s return for the same reason -- the API cannot
+ * send mail, so it hands the website the code and the address and the website
+ * sends the link. Never rendered anywhere; the website's own route consumes it.
+ */
+export interface EmailVerification {
+  /** Goes in `activation_code`, and in the link. */
+  token: string;
+  email: string;
+  name: string | null;
+}
+
+/** A new account, plus the confirmation the website has to email. */
+export interface Registration {
+  session: Session;
+  verification: EmailVerification;
+}
+
+/**
  * Creates a client account and signs them straight in.
  *
  * `tbl_user_client.email` has no unique index, so uniqueness is checked here
@@ -225,8 +282,20 @@ export interface RegistrationInput {
  * there is no way to make it atomic without adding an index, which would be
  * DDL. The duplicate is survivable: sign-in orders by id and always resolves to
  * the same row.
+ *
+ * **The account is created unconfirmed, and still signed in.** The confirmation
+ * code goes into `activation_code` and the token comes back for the website to
+ * email; the session comes back beside it, because a client who has just
+ * registered mid-order has to be able to carry on. So the confirmation is
+ * something they are asked for on the next screen rather than a gate in front of
+ * it. The one place it does bite is the Acme site, whose login refuses an account
+ * with a code set — which is that application's own rule, and is now a wait for
+ * an email rather than the permanent lockout it would have been before anything
+ * here could clear the column.
  */
-export const register = async (input: RegistrationInput): Promise<Session> => {
+export const register = async (
+  input: RegistrationInput
+): Promise<Registration> => {
   const email = normaliseEmail(input.email);
   if (!email) throw badRequest('Enter a valid email address.');
 
@@ -240,6 +309,15 @@ export const register = async (input: RegistrationInput): Promise<Session> => {
     repository.nextDisplayId(),
   ]);
 
+  // Full strength, unlike the reset pin: `activation_code` is `char(100)` and a
+  // 32-byte base64url token is 43 of them, so nothing here has to be traded away
+  // to fit the column. The code *is* the token — there is no second place to keep
+  // a digest of it, and no expiry column to pair it with, so a confirmation link
+  // does not expire. That is the schema's answer rather than a preference: the
+  // worst case is a link that still works in a month, and the code is replaced
+  // outright by every resend.
+  const activationCode = newToken();
+
   const created = await repository.createClient({
     type: clean(input.clientType) ?? CLIENT_TYPE.PUBLIC,
     title: clean(input.title),
@@ -251,12 +329,58 @@ export const register = async (input: RegistrationInput): Promise<Session> => {
     mobile: clean(input.mobile),
     company: clean(input.company),
     displayId,
-    activationCode: crypto.randomBytes(16).toString('hex'),
+    activationCode,
   });
 
   logger.info('Client registered', { userId: created.id, displayId });
 
-  return startSession(clientToUser(created));
+  return {
+    session: startSession(clientToUser(created)),
+    verification: {
+      token: activationCode,
+      email,
+      name: fullName(created.fname, created.lname),
+    },
+  };
+};
+
+/**
+ * Issues a fresh confirmation code for an account that has not confirmed yet.
+ *
+ * Authenticated rather than by email address, and that is what keeps it off the
+ * enumeration surface entirely: the caller has already proved whose account it is,
+ * so there is no "does this address exist" to be learned here. The website's
+ * banner is only shown to a signed-in client, so there is no path that needs the
+ * public version.
+ *
+ * Null when there is nothing to send — the address is already confirmed, or the
+ * account has no address on it. The caller sends no email and says the same thing
+ * either way, because "already confirmed" is not a failure worth an error page.
+ */
+export const resendEmailVerification = async (
+  userId: number
+): Promise<EmailVerification | null> => {
+  const client = await repository.findClientById(userId);
+  if (!client) throw unauthorized();
+
+  const email = clean(client.email);
+
+  if (!email || isEmailVerified(client)) {
+    logger.info('Verification resend had nothing to send', {
+      userId,
+      alreadyVerified: Boolean(email) && isEmailVerified(client),
+    });
+    return null;
+  }
+
+  // Replaces the previous code rather than reusing it, so a client who asks
+  // twice is not left with two live links and only one of them working.
+  const token = newToken();
+  await repository.setClientActivationCode(client.id, token);
+
+  logger.info('Verification resent', { userId });
+
+  return { token, email, name: fullName(client.fname, client.lname) };
 };
 
 /** Whether an address can still be registered, for the live check on the form. */
@@ -382,13 +506,34 @@ export const changePassword = async (
   logger.info('Password changed', { userId });
 };
 
-/** Confirms an email address using the code stored at registration. */
-export const verifyEmail = async (code: string): Promise<void> => {
+/**
+ * Confirms an email address using the code from the link.
+ *
+ * The code is looked up in `activation_code` and cleared on success, which is
+ * what makes the link single-use — a replay finds no row. It also means a spent
+ * link and a forged one are indistinguishable from here, so the message covers
+ * both rather than guessing which happened. That matters in practice: a client
+ * who clicks the link twice, or whose mail client prefetched it, would otherwise
+ * be told their confirmation failed when it worked the first time.
+ *
+ * Returns who was confirmed, so the caller can name them. Not a leak — the caller
+ * has just presented a valid single-use code for this one account.
+ */
+export const verifyEmail = async (
+  code: string
+): Promise<{ email: string | null; name: string | null }> => {
   const client = await repository.findClientByActivationCode(code);
-  if (!client) throw badRequest('That confirmation link is not valid.');
+
+  if (!client) {
+    throw badRequest(
+      'That confirmation link is not valid, or it has already been used. If your address is already confirmed, just sign in.'
+    );
+  }
 
   await repository.activateClient(client.id);
   logger.info('Email verified', { userId: client.id });
+
+  return { email: clean(client.email), name: clean(client.fname) };
 };
 
 /** The signed-in user, re-read from the database rather than from the token. */

@@ -178,9 +178,38 @@ export const listForClient = async (
     }),
   ]);
 
+  /**
+   * The assigned consultants, loaded once for the whole page.
+   *
+   * These lists used to render every order as unassigned, because they called
+   * the presenter with no consultant while the detail view passed one. Same
+   * order, two answers: the dashboard card said "A consultant will be assigned
+   * shortly" and the order page named them — which reads to a client as CLS
+   * losing track of their job.
+   *
+   * Batched rather than resolved per row: this runs for every order a client
+   * has, and `findConsultant` in a `map` would be an N+1.
+   */
+  const consultants = await repository.findConsultants([
+    ...cls.rows.map((row) => row.visa_cls_team_member),
+    ...legacy.rows.map((row) => row.visa_cls_team_member),
+  ]);
+
+  const consultantFor = (staffId: number | null) => {
+    const admin = staffId === null ? undefined : consultants.get(staffId);
+    if (!admin) return null;
+
+    return {
+      name: [clean(admin.fname), clean(admin.lname)].filter(Boolean).join(' ') || null,
+      email: clean(admin.email),
+    };
+  };
+
   const merged = [
-    ...cls.rows.map((row) => toOrderView(row)),
-    ...legacy.rows.map((row) => toLegacyOrderView(row)),
+    ...cls.rows.map((row) => toOrderView(row, consultantFor(row.visa_cls_team_member))),
+    ...legacy.rows.map((row) =>
+      toLegacyOrderView(row, consultantFor(row.visa_cls_team_member))
+    ),
   ].sort((left, right) => {
     // Nulls last: an order with no submission date is older than one with a
     // date, as far as a client scanning the list is concerned.

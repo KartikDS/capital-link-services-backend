@@ -4,6 +4,7 @@ import {
   detectAlgorithm,
   generatePassword,
   hashPassword,
+  NEVER_MATCHES,
   newResetPin,
   verifyPassword,
 } from '../../src/shared/passwords';
@@ -16,6 +17,8 @@ import {
  */
 
 const md5 = (value: string) => crypto.createHash('md5').update(value).digest('hex');
+/** What `GlobalModel::passGenerator()` produces: `md5(md5($password))`. */
+const md5x2 = (value: string) => md5(md5(value));
 const sha1 = (value: string) => crypto.createHash('sha1').update(value).digest('hex');
 const sha256 = (value: string) =>
   crypto.createHash('sha256').update(value).digest('hex');
@@ -26,6 +29,13 @@ describe('detectAlgorithm', () => {
     expect(detectAlgorithm(md5('x'))).toBe('md5');
     expect(detectAlgorithm(sha1('x'))).toBe('sha1');
     expect(detectAlgorithm(sha256('x'))).toBe('sha256');
+  });
+
+  it('cannot tell double MD5 from single, and says md5 for both', () => {
+    // Both are 32 hex characters. `verifyPassword` settles which by comparing;
+    // there is nothing in the stored value to detect.
+    expect(detectAlgorithm(md5x2('x'))).toBe('md5');
+    expect(detectAlgorithm(md5('x'))).toBe('md5');
   });
 
   it('reports anything else as unknown rather than guessing', () => {
@@ -90,6 +100,90 @@ describe('verifyPassword', () => {
     // A plaintext password in the column must not authenticate by string
     // equality — that would be the one case where storing plaintext works.
     expect((await verifyPassword('hunter2', 'hunter2')).valid).toBe(false);
+  });
+});
+
+/**
+ * The reason the two applications could not share a login.
+ *
+ * Acme writes `md5(md5($password))` and this API used to verify a single MD5
+ * against it. Same shape, different scheme, so every account opened on the Acme
+ * site was refused here with "check your email address and password" -- and
+ * every account opened here was refused there, because the Acme login compares
+ * the hash inside a `WHERE` clause and bcrypt is salted.
+ *
+ * These are the tests that fail if either half of that regresses.
+ */
+describe('interoperability with the Acme application', () => {
+  it('signs in an account Acme created', async () => {
+    // Exactly what passGenerator() would have left in tbl_user_client.password.
+    const result = await verifyPassword('hunter2', md5x2('hunter2'));
+
+    expect(result.valid).toBe(true);
+    expect(result.algorithm).toBe('md5x2');
+    // Verified from the plaintext, so this is the one moment it can be upgraded
+    // without sending a reset email.
+    expect(result.needsUpgrade).toBe(true);
+  });
+
+  it('refuses the wrong password against an Acme hash', async () => {
+    expect((await verifyPassword('wrong', md5x2('hunter2'))).valid).toBe(false);
+  });
+
+  it('reads a non-ASCII password as UTF-8, the way PHP md5() did', async () => {
+    // PHP hashed the raw bytes it was posted, and every Acme template declares
+    // charset=utf-8. The latin1 reading of the same password is a different
+    // digest, so this asserts which one we agree with -- changing it would lock
+    // out every client whose password is not pure ASCII, silently.
+    const password = 'café-Straße-2024';
+    const asLatin1 = md5(
+      crypto.createHash('md5').update(Buffer.from(password, 'latin1')).digest('hex')
+    );
+
+    expect((await verifyPassword(password, md5x2(password))).valid).toBe(true);
+    expect(asLatin1).not.toBe(md5x2(password));
+    expect((await verifyPassword(password, asLatin1)).valid).toBe(false);
+  });
+
+  it('still verifies a single MD5, for rows of other provenance', async () => {
+    const result = await verifyPassword('hunter2', md5('hunter2'));
+
+    expect(result.valid).toBe(true);
+    expect(result.algorithm).toBe('md5');
+  });
+
+  it('does not let one scheme vouch for another password', async () => {
+    // Trying two schemes must not become "any digest of anything will do".
+    expect((await verifyPassword('hunter2', md5('other'))).valid).toBe(false);
+    expect((await verifyPassword('hunter2', md5x2('other'))).valid).toBe(false);
+  });
+
+  it('emits a hash PHP password_verify can read', async () => {
+    const hash = await hashPassword('hunter2');
+
+    // 60 characters, a $2 prefix, then cost, salt and digest. That is the shape
+    // GlobalModel::verifyPassword() dispatches on, and PHP crypt() needs the
+    // prefix and the length exactly -- a re-encoded or truncated value fails
+    // there by returning false rather than by raising anything.
+    expect(hash).toHaveLength(60);
+    expect(hash).toMatch(/^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/);
+  });
+});
+
+describe('NEVER_MATCHES', () => {
+  it('is a real bcrypt hash, so verifying against it does the bcrypt work', () => {
+    // Not decoration. The literal this replaced was 59 characters, which is not
+    // a bcrypt hash: it was detected as `unknown` and refused without hashing
+    // anything, so "no such account" returned measurably faster than "wrong
+    // password". Sign-in uses this precisely to make those two cost the same.
+    expect(NEVER_MATCHES).toHaveLength(60);
+    expect(detectAlgorithm(NEVER_MATCHES)).toBe('bcrypt');
+  });
+
+  it('matches nothing', async () => {
+    for (const attempt of ['', 'password', 'hunter2', NEVER_MATCHES]) {
+      expect((await verifyPassword(attempt, NEVER_MATCHES)).valid).toBe(false);
+    }
   });
 });
 

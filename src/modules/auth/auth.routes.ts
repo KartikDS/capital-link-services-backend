@@ -70,16 +70,32 @@ authRoutes.post(
   }
 );
 
-/** POST /api/auth/register */
+/**
+ * POST /api/auth/register
+ *
+ * Returns the session *and* a confirmation token, the same way `forgot-password`
+ * returns a reset token: the API cannot send mail, so the website's own route
+ * sends the confirmation link and this is how it gets the code. Never rendered.
+ *
+ * The session comes back regardless of the pending confirmation. A client who
+ * registered halfway through an order has to be able to finish it, so the
+ * confirmation is asked for on the next screen rather than gating it —
+ * `user.emailVerified` on the session is how the website knows to ask.
+ */
 authRoutes.post(
   '/register',
   limits.register,
   validate(registerSchema),
   async (req: Request, res: Response) => {
     const input = req.body as z.infer<typeof registerSchema>;
-    const session = await service.register(input);
+    const { session, verification } = await service.register(input);
 
-    res.status(201).json(session);
+    res.status(201).json({
+      ...session,
+      // Consumed by the website's register route, which sends the email.
+      verificationToken: verification.token,
+      verificationName: verification.name,
+    });
   }
 );
 
@@ -178,22 +194,75 @@ const verifySchema = z.object({
   token: z.string().trim().min(1, 'That confirmation link is not valid'),
 });
 
-/** POST and GET /api/auth/verify-email — the link in the welcome email. */
+const CONFIRMED = 'Thank you — your email address is confirmed.';
+
+/**
+ * POST and GET /api/auth/verify-email — the link in the confirmation email.
+ *
+ * Both methods, because the two callers need different ones. The website's own
+ * route POSTs, which keeps the code out of a URL its server logs; the GET is
+ * there so the link can also be followed directly, which is what a mail client
+ * that rewrites buttons ends up doing.
+ *
+ * Unauthenticated on purpose. The whole point of the link is that it works from a
+ * mail client, which carries no session — possession of the single-use code is the
+ * proof, and it is the only proof the schema can offer.
+ *
+ * `email` and `name` come back so the website can name the account on the
+ * confirmation screen. The caller has just presented a valid code for it.
+ */
 authRoutes.post(
   '/verify-email',
+  limits.emailVerification,
   validate(verifySchema),
   async (req: Request, res: Response) => {
-    await service.verifyEmail((req.body as { token: string }).token);
-    message(res, 'Thank you — your email address is confirmed.');
+    const client = await service.verifyEmail((req.body as { token: string }).token);
+    ok(res, { message: CONFIRMED, ...client });
   }
 );
 
 authRoutes.get(
   '/verify-email',
+  limits.emailVerification,
   validate(verifySchema, 'query'),
   async (req: Request, res: Response) => {
-    await service.verifyEmail(validQuery<{ token: string }>(req).token);
-    message(res, 'Thank you — your email address is confirmed.');
+    const client = await service.verifyEmail(
+      validQuery<{ token: string }>(req).token
+    );
+    ok(res, { message: CONFIRMED, ...client });
+  }
+);
+
+/**
+ * POST /api/auth/resend-verification
+ *
+ * Behind the token, because the account is already known from it — so unlike
+ * `forgot-password` there is no address to be probed here and no need for a
+ * uniform answer to hide one.
+ *
+ * Answers the same way whether a code was issued or not. An account that is
+ * already confirmed has nothing to resend, and that is not an error the client
+ * needs an error page for — they asked for the link and they already have what
+ * the link was for.
+ */
+authRoutes.post(
+  '/resend-verification',
+  authenticate,
+  limits.emailVerification,
+  async (req: Request, res: Response) => {
+    const issued = await service.resendEmailVerification(currentUserId(req));
+
+    ok(res, {
+      message: 'If your address still needs confirming, a new link is on its way.',
+      // Consumed by the website's route, which sends the email. Never rendered.
+      ...(issued
+        ? {
+            verificationToken: issued.token,
+            email: issued.email,
+            name: issued.name,
+          }
+        : {}),
+    });
   }
 );
 

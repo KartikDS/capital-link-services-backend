@@ -24,7 +24,8 @@
     "orders:link": "tsx scripts/linkGuestOrders.ts",
     "routes": "tsx scripts/listRoutes.ts",
     "models:generate": "tsx scripts/generateModels.ts",
-    "prepare": "husky || true"
+    "prepare": "husky || true",
+    "db:countries": "tsx scripts/checkCountrySlugs.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

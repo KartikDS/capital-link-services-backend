@@ -89,11 +89,27 @@ export const findClientByResetPin = async (
   });
 };
 
+/**
+ * Finds a client by their activation code.
+ *
+ * The code is what `activation_code` holds while an address is unconfirmed, and
+ * it is cleared the moment it is used -- so a second lookup with the same code
+ * finds nothing, which is what makes a confirmation link single-use.
+ *
+ * A blank argument is refused before the query runs. `activation_code` is blank
+ * on every confirmed account in the table, so a query for `''` would match the
+ * first of them and confirm a stranger's address.
+ */
 export const findClientByActivationCode = async (
   code: string
 ): Promise<UserClient | null> => {
-  if (!code) return null;
-  return UserClient.findOne({ where: { activation_code: code } });
+  const trimmed = code.trim();
+  if (!trimmed) return null;
+
+  return UserClient.findOne({
+    where: { activation_code: trimmed },
+    order: [['id', 'ASC']],
+  });
 };
 
 export interface NewClient {
@@ -107,17 +123,44 @@ export interface NewClient {
   mobile: string | null;
   company: string | null;
   displayId: string;
-  activationCode: string;
+  /**
+   * The pending email confirmation, or null for an account that needs none.
+   *
+   * `char(100)` and nullable. The Acme application reads it as "this account has
+   * not confirmed its email address yet" and refuses the login while it is set --
+   * see `CLShomeBundle/Controller/UserLoginController.php`, which answers "Your
+   * account is not verified." on a non-empty value.
+   *
+   * That is now a *pending* confirmation rather than a lockout, and it is the
+   * change that made writing a code here safe: the website emails the link, the
+   * website has a page that redeems it, and `activateClient` clears the column.
+   * Neither of those existed when this was documented as always-null, which is
+   * why it was.
+   *
+   * Still null on one path: `orders.claim` opens an account for a guest who
+   * checked out without one. They never asked to register and CLS emails them
+   * their credentials, so there is no confirmation for them to be waiting on --
+   * writing a code would bar them from the Acme site over a link they were never
+   * expecting.
+   */
+  activationCode: string | null;
 }
 
 /**
  * Creates a client account.
  *
  * `s_enabled` is set to 1 so the new client can sign in immediately, which is
- * what the website's register-then-continue flow expects. The activation code is
- * still stored and still verifiable — the account is usable while unverified
- * rather than locked, because the alternative strands anyone whose confirmation
- * email is delayed halfway through placing an order.
+ * what the website's register-then-continue flow expects: the account is usable
+ * straight away rather than locked, because the alternative strands anyone whose
+ * confirmation email is delayed halfway through placing an order.
+ *
+ * **`activation_code` carries the pending email confirmation**, on the one path
+ * that has a confirmation to be pending: registration. It was null for a while,
+ * and the reason was sound at the time -- a code that nothing emailed and nothing
+ * could clear was a permanent Acme lockout dressed up as a confirmation. Both
+ * halves now exist, so a code written here is redeemed by the link in the
+ * verification email and cleared by `activateClient`. Guest-checkout accounts
+ * still pass null; see `NewClient.activationCode`.
  *
  * `is_address_confirmed` is left at the column's own default. The old admin
  * screens use it to mark an address a consultant has checked, and a new account
@@ -176,11 +219,39 @@ export const setClientResetPin = async (
   await UserClient.update({ reset_pin: pin }, { where: { id } });
 };
 
+/**
+ * Marks an address confirmed.
+ *
+ * Clearing `activation_code` is the whole confirmation: it is the column the Acme
+ * login reads to decide whether an account is verified, and it is what
+ * `emailVerified` on the session is derived from. Null rather than the empty
+ * string Acme writes -- the column is nullable, the model types it as nullable,
+ * and Acme's own check (`!= ''`) treats null and `''` alike.
+ *
+ * `s_enabled` is set in the same statement. It is already 1 on anything this
+ * stack created, but a legacy row carrying a code Acme issued may not be, and an
+ * account that confirmed its address and still could not sign in would be a
+ * confirmation that did nothing.
+ */
 export const activateClient = async (id: number): Promise<void> => {
   await UserClient.update(
     { s_enabled: ENABLED, activation_code: null },
     { where: { id } }
   );
+};
+
+/**
+ * Replaces the pending confirmation code.
+ *
+ * For a resend. The old code stops working the moment this lands, which is the
+ * point: a client who asked for a second email should not be left with two live
+ * links, and only one column is available to hold either of them.
+ */
+export const setClientActivationCode = async (
+  id: number,
+  code: string
+): Promise<void> => {
+  await UserClient.update({ activation_code: code }, { where: { id } });
 };
 
 /**
