@@ -93,7 +93,6 @@ export const authPaths = {
             description:
               'The confirmation code, for the caller to put in the email link. Never rendered anywhere.',
           },
-          verificationName: { type: 'string', nullable: true },
         }),
         409: { description: 'That address is already registered' },
         429: { $ref: '#/components/responses/TooManyRequests' },

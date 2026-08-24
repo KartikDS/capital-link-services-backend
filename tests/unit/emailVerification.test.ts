@@ -84,8 +84,8 @@ beforeEach(() => {
 
 describe('registration', () => {
   it('issues a confirmation code and still returns a session', async () => {
-    createClient.mockImplementation(async (input: { activationCode: string }) =>
-      client({ activation_code: input.activationCode })
+    createClient.mockImplementation((input: { activationCode: string }) =>
+      Promise.resolve(client({ activation_code: input.activationCode }))
     );
 
     const { session, verification } = await register(registration);

@@ -99,6 +99,14 @@ export const findClientByResetPin = async (
  * A blank argument is refused before the query runs. `activation_code` is blank
  * on every confirmed account in the table, so a query for `''` would match the
  * first of them and confirm a stranger's address.
+ *
+ * Archived rows are excluded, and that matters because `activateClient` sets
+ * `s_enabled` as well as clearing the code. `s_archive` is this schema's soft
+ * delete: without the exclusion, an old link to an account somebody deleted would
+ * switch it back on, which is a deletion undone by an email from years ago.
+ * Disabled-but-not-archived rows are still reachable on purpose -- that is the
+ * ordinary state of a legacy account waiting on the confirmation Acme asked it
+ * for, and refusing them is refusing the one case this lookup exists to serve.
  */
 export const findClientByActivationCode = async (
   code: string
@@ -107,7 +115,10 @@ export const findClientByActivationCode = async (
   if (!trimmed) return null;
 
   return UserClient.findOne({
-    where: { activation_code: trimmed },
+    where: {
+      activation_code: trimmed,
+      s_archive: { [Op.or]: [{ [Op.is]: null }, { [Op.ne]: 1 }] },
+    },
     order: [['id', 'ASC']],
   });
 };

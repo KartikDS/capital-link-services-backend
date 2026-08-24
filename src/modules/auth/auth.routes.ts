@@ -1,6 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { authenticate, currentUserId } from '../../middleware/authenticate';
+import {
+  authenticate,
+  currentUserId,
+  requireClient,
+} from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
 import { message, ok } from '../../shared/http/responses';
 import {
@@ -92,9 +96,10 @@ authRoutes.post(
 
     res.status(201).json({
       ...session,
-      // Consumed by the website's register route, which sends the email.
+      // Consumed by the website's register route, which sends the email. The
+      // name is not sent with it: the caller has the client's own form to hand
+      // and does not need this to tell it who just registered.
       verificationToken: verification.token,
-      verificationName: verification.name,
     });
   }
 );
@@ -213,7 +218,7 @@ const CONFIRMED = 'Thank you — your email address is confirmed.';
  */
 authRoutes.post(
   '/verify-email',
-  limits.emailVerification,
+  limits.emailConfirmation,
   validate(verifySchema),
   async (req: Request, res: Response) => {
     const client = await service.verifyEmail((req.body as { token: string }).token);
@@ -223,7 +228,7 @@ authRoutes.post(
 
 authRoutes.get(
   '/verify-email',
-  limits.emailVerification,
+  limits.emailConfirmation,
   validate(verifySchema, 'query'),
   async (req: Request, res: Response) => {
     const client = await service.verifyEmail(
@@ -248,7 +253,13 @@ authRoutes.get(
 authRoutes.post(
   '/resend-verification',
   authenticate,
-  limits.emailVerification,
+  // Clients only, and not merely because staff have no address to confirm.
+  // `currentUserId` returns the token's subject, and the id spaces of
+  // `tbl_user_admin` and `tbl_user_client` overlap -- so without this an admin
+  // token whose id happened to match an unconfirmed client would rotate that
+  // client's code and retire the link they were about to click.
+  requireClient,
+  limits.verificationResend,
   async (req: Request, res: Response) => {
     const issued = await service.resendEmailVerification(currentUserId(req));
 

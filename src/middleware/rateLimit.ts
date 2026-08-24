@@ -146,13 +146,32 @@ export const limits = {
    * Keyed on the caller's IP rather than the account, because the endpoint is
    * authenticated and the account is already known from the token. Three in a
    * quarter of an hour: a client whose email has not arrived presses the button
-   * once, maybe twice, and each press sends real mail from CLS's mailbox --
-   * so this is as much about not turning the portal into a way of posting mail
-   * to an address as it is about the write behind it.
+   * once, maybe twice, and each press sends real mail from CLS's mailbox — so this
+   * is as much about not turning the portal into a way of posting mail to an
+   * address as it is about the write behind it.
    */
-  emailVerification: rateLimit({
-    name: 'email-verification',
+  verificationResend: rateLimit({
+    name: 'verification-resend',
     max: 3,
+    windowMs: 15 * 60_000,
+  }),
+
+  /**
+   * Redeeming a confirmation link. A different job, so a different number.
+   *
+   * The resend limit would be wrong here and tightness would be the wrong
+   * instinct: unlike `reset_pin`, the code being matched is a full 32-byte token,
+   * so this is not an endpoint anybody guesses their way through — and one
+   * confirmation costs a click nobody repeats. What the limit is actually for is
+   * the write behind it and a mail scanner that follows every link it sees.
+   *
+   * Twenty, because it is keyed on the IP: a shared office connection is one key
+   * for everybody behind it, and three would mean the fourth colleague to confirm
+   * their address that afternoon could not.
+   */
+  emailConfirmation: rateLimit({
+    name: 'email-confirmation',
+    max: 20,
     windowMs: 15 * 60_000,
   }),
 
