@@ -229,6 +229,87 @@ describe('the internal namespace', () => {
 
     expect(response.status).toBe(403);
   });
+
+  /**
+   * `POST /api/orders/documents` writes a file against whatever order it is given
+   * a reference for, with no session behind it — so the secret is the only thing
+   * that stands in front of it. It is also the newest of these endpoints and the
+   * only one that takes multipart, which is worth its own coverage: `manyFiles`
+   * runs before the guard could see a JSON body, so the order of the middleware
+   * is load-bearing.
+   */
+  describe('document uploads from an order form', () => {
+    it('refuses an upload with no secret', async () => {
+      const response = await request(app)
+        .post('/api/orders/documents')
+        .field('reference', 'CLS-000001')
+        .attach('documents', Buffer.from('%PDF-1.4 test'), 'passport.pdf');
+
+      expect(response.status).toBe(403);
+    });
+
+    it('refuses an upload with the wrong secret', async () => {
+      const response = await request(app)
+        .post('/api/orders/documents')
+        .set('x-internal-secret', 'not-the-secret')
+        .field('reference', 'CLS-000001')
+        .attach('documents', Buffer.from('%PDF-1.4 test'), 'passport.pdf');
+
+      expect(response.status).toBe(403);
+    });
+
+    it('does not accept a client token in place of the secret', async () => {
+      // The signed-in half of the site uploads through
+      // `/api/orders/:reference/documents`, which checks ownership. A bearer token
+      // must not be a way past that check into the unowned one.
+      const response = await request(app)
+        .post('/api/orders/documents')
+        .set('Authorization', `Bearer ${clientToken()}`)
+        .field('reference', 'CLS-000001')
+        .attach('documents', Buffer.from('%PDF-1.4 test'), 'passport.pdf');
+
+      expect(response.status).toBe(403);
+    });
+
+    it('refuses an upload with no reference, having read the multipart body', async () => {
+      // Proves the middleware order: without `manyFiles` first, the reference
+      // field would never reach `req.body` and this would fail for the wrong
+      // reason. 400 rather than 403, so the guard has already passed.
+      const response = await request(app)
+        .post('/api/orders/documents')
+        .set('x-internal-secret', 'test-internal-secret')
+        .attach('documents', Buffer.from('%PDF-1.4 test'), 'passport.pdf');
+
+      expect(response.status).toBe(400);
+    });
+
+    it('refuses a file type the allowlist does not name', async () => {
+      const response = await request(app)
+        .post('/api/orders/documents')
+        .set('x-internal-secret', 'test-internal-secret')
+        .field('reference', 'CLS-000001')
+        .attach('documents', Buffer.from('#!/bin/sh'), 'payload.sh');
+
+      expect(response.status).toBe(400);
+      expect(response.body.message).toMatch(/we accept/i);
+    });
+
+    it('refuses a file whose extension and contents disagree', async () => {
+      // A browser will happily report `application/pdf` for anything, and the
+      // extension is what ends up in a `varchar` some other system may hand to a
+      // web server.
+      const response = await request(app)
+        .post('/api/orders/documents')
+        .set('x-internal-secret', 'test-internal-secret')
+        .field('reference', 'CLS-000001')
+        .attach('documents', Buffer.from('<?php ?>'), {
+          filename: 'passport.pdf',
+          contentType: 'application/x-php',
+        });
+
+      expect(response.status).toBe(400);
+    });
+  });
 });
 
 describe('validation', () => {

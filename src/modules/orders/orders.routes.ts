@@ -461,6 +461,74 @@ orderRoutes.post(
 );
 
 // ---------------------------------------------------------------------------
+// Documents attached while placing an order
+// ---------------------------------------------------------------------------
+
+const journeyDocumentsSchema = z.object({
+  reference: z.string().trim().min(1, 'An order reference is required').max(64),
+});
+
+/**
+ * POST /api/orders/documents
+ *
+ * `multipart/form-data`, server-to-server. The scans a client attached to the
+ * order form itself, stored against the order the moment it is lodged.
+ *
+ * ## Why this exists when `/:reference/documents` already does
+ *
+ * That route sits behind `authenticate`, and the person this one serves has no
+ * token: the clearance, voucher and legalisation journeys can all be completed by
+ * a guest. Their scans used to be dropped on the floor — the website collected
+ * `File` objects, never sent them, and said so in a comment — so a client who
+ * attached their passport at 2am got a consultant emailing to ask for it.
+ *
+ * **Internal**, because there is no session to check ownership against, so the
+ * only thing standing between this and an open write endpoint is the shared
+ * secret. `/api/cls/[...path]` blocks the path too. The website's own route
+ * forwards a browser's upload and is the only caller.
+ *
+ * **The reference is in the body**, for the same reason `claim` puts it there: a
+ * fixed path is one entry in that proxy's blocklist where a pattern would be
+ * needed otherwise. It also has to be — `manyFiles` has already consumed the
+ * stream by the time a handler could read a path parameter, and multipart text
+ * fields land on `req.body` beside the files.
+ *
+ * ## Ordering
+ *
+ * `manyFiles` runs before `validate`, because the reference is a multipart field
+ * and multer is what parses it onto `req.body`. Validating first would read an
+ * empty body and reject every request.
+ *
+ * ## Why an unknown reference is a 404 here, and not a 200 like `claim`
+ *
+ * `claim` swallows a miss because its caller has just taken a payment and must
+ * not fail. This runs at lodgement, before money moves, and its caller can still
+ * show the client something honest. A silent 200 would leave the website
+ * believing the scans were stored.
+ */
+orderRoutes.post(
+  '/documents',
+  internalOnly,
+  limits.upload,
+  manyFiles,
+  validate(journeyDocumentsSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof journeyDocumentsSchema>;
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    if (files.length === 0) throw badRequest('Choose at least one file to upload.');
+
+    const resolved = await service.resolve(body.reference);
+
+    if (!resolved) {
+      throw notFound('We could not find that order, so there is nowhere to store these files.');
+    }
+
+    created(res, { documents: await attachDocuments(resolved, files) });
+  }
+);
+
+// ---------------------------------------------------------------------------
 // A client's own orders
 // ---------------------------------------------------------------------------
 

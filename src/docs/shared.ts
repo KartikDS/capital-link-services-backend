@@ -156,8 +156,19 @@ export interface OperationInput {
   /** How the caller proves who they are. Omit for a public endpoint. */
   auth?: 'bearer' | 'internal';
   query?: readonly QueryParam[];
-  /** A JSON request body schema. `true` marks it required. */
-  body?: { schema: Record<string, unknown>; required?: boolean };
+  /**
+   * A request body schema. `required` defaults to true.
+   *
+   * `contentType` defaults to `application/json`, which is every endpoint here
+   * bar the uploads: a multipart operation has to declare
+   * `multipart/form-data` or Swagger UI renders a JSON textarea for a request
+   * that needs a file picker, and the generated clients send the wrong header.
+   */
+  body?: {
+    schema: Record<string, unknown>;
+    required?: boolean;
+    contentType?: string;
+  };
   /** Merged over the defaults, so a specific 409 or 503 can be named. */
   responses?: Record<string | number, unknown>;
   /** Overrides the response set chosen from `auth`. */
@@ -252,7 +263,11 @@ export const operation = (
       ? {
           requestBody: {
             required: input.body.required ?? true,
-            content: { 'application/json': { schema: input.body.schema } },
+            content: {
+              [input.body.contentType ?? 'application/json']: {
+                schema: input.body.schema,
+              },
+            },
           },
         }
       : {}),

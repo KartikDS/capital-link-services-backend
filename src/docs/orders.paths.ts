@@ -419,6 +419,60 @@ export const orderPaths = {
   },
 
   // -------------------------------------------------------------------------
+  // Documents attached while placing an order
+  // -------------------------------------------------------------------------
+
+  '/api/orders/documents': {
+    post: operation('/api/orders/documents', {
+      tag,
+      summary: 'Store the scans attached to an order form (server-to-server)',
+      description:
+        '`multipart/form-data`. The files a client attached while *placing* an order, as opposed to the ones they upload later from the portal.' +
+        NL +
+        NL +
+        '**Why this is not `POST /api/orders/{reference}/documents`:** that route is behind `authenticate`, and the person this serves has no token. The clearance, voucher and legalisation journeys can all be completed by a guest, so the upload has to be trusted by shared secret rather than by session — which is also why the website blocks the path in its own proxy and forwards the browser’s upload from a server route instead.' +
+        NL +
+        NL +
+        '**Where the files end up:** `tbl_cls_order_documents`, keyed on `order_id`, status `1` (uploaded). Exactly the same rows the portal upload writes, which is the point — the portal resolves a client’s documents *through their orders*, so these appear on the documents screen as soon as `POST /api/orders/claim` stamps a `client_id` on the order. Nothing has to be re-pointed at the new account.' +
+        NL +
+        NL +
+        '**The reference is a form field**, not a path parameter: `manyFiles` has consumed the request stream before a handler could read one, and a fixed path is a single entry in the website’s proxy blocklist where a pattern would be needed otherwise.' +
+        NL +
+        NL +
+        'An unknown reference is a **404**, unlike `claim`, which answers 200 on a miss. This runs at lodgement rather than after a payment, so its caller can still tell the client something true — and a silent success would leave the website believing scans were stored when they were not.',
+      auth: 'internal',
+      body: {
+        contentType: 'multipart/form-data',
+        schema: body(
+          {
+            reference: f.string('The order the files belong to, e.g. `CLS-001482`.'),
+            files: {
+              type: 'array',
+              items: { type: 'string', format: 'binary' },
+              description:
+                'The scans. Extension and MIME type must agree; see `GET /api/config/public` for the accepted list and size limit.',
+            },
+          },
+          ['reference', 'files']
+        ),
+      },
+      responses: {
+        201: okObject('Stored', {
+          documents: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Document' },
+          },
+        }),
+        400: { description: 'No files, or no reference' },
+        404: { description: 'No such order, so there is nowhere to store them' },
+        413: { description: 'Larger than the configured limit' },
+        415: { description: 'That extension is not accepted' },
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
+  // -------------------------------------------------------------------------
   // Confirmations held until payment
   // -------------------------------------------------------------------------
 

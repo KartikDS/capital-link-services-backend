@@ -46,18 +46,52 @@ const ALLOWED: Record<string, readonly string[]> = {
 export const ALLOWED_EXTENSIONS = Object.keys(ALLOWED);
 
 /**
+ * The client's own filename, reduced to something safe to put in a path.
+ *
+ * Letters, digits and dashes only, so nothing survives that could mean anything
+ * to a filesystem or a shell: no `..`, no separators, no null bytes, no Unicode.
+ * Capped at 60 characters because the whole stored name has to fit a
+ * `varchar(255)` alongside its directory prefix.
+ *
+ * An empty result is normal — a file called `照片.jpg` slugs to nothing — and the
+ * caller drops the segment entirely rather than leaving a stray dash.
+ */
+export const slugForPath = (name: string): string =>
+  path
+    .basename(name, path.extname(name))
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/g, '');
+
+/**
  * A stored name that cannot escape its directory or collide.
  *
- * The client's filename is never used on disk. It arrives from a browser, it can
- * contain `../`, a null byte or four hundred characters of Unicode, and any of
- * those in a path is a problem. The original is kept in the database column
- * instead, where it is only ever data.
+ * The client's filename is never used on disk *as given*. It arrives from a
+ * browser, it can contain `../`, a null byte or four hundred characters of
+ * Unicode, and any of those in a path is a problem.
+ *
+ * ## Why a slug of it is kept anyway
+ *
+ * `tbl_cls_order_documents` has no original-name column, so the stored name is
+ * the only name anything downstream can show — and `1755781234-a3f2c1.pdf` told
+ * both the client and their consultant nothing. Whoever opened the portal's
+ * documents screen saw a list of timestamps and had to download each one to find
+ * out which was the passport. A slugged copy of the original rides along in the
+ * same `varchar(255)`: `1755781234-a3f2c1-passport-john.pdf`.
+ *
+ * The timestamp and nonce still lead, so uniqueness never depends on the part
+ * that came from the browser, and the slug is an allowlist rather than an escape
+ * — a name that slugs to nothing simply loses the segment.
  */
-const storedName = (originalName: string): string => {
+export const storedName = (originalName: string): string => {
   const extension = path.extname(originalName).toLowerCase();
   const stamp = Date.now();
   const nonce = crypto.randomBytes(6).toString('hex');
-  return `${stamp}-${nonce}${extension}`;
+  const slug = slugForPath(originalName);
+
+  return `${stamp}-${nonce}${slug ? `-${slug}` : ''}${extension}`;
 };
 
 const ensureDir = (dir: string): void => {

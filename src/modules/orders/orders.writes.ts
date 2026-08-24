@@ -43,10 +43,20 @@ export interface AttachedDocument {
  *
  * `tbl_cls_order_documents.document` is a `varchar(255)` holding a filename, and
  * the row has no size, no MIME type and no original-name column. So the stored
- * name goes in the column and the client's own filename is *not* preserved
- * anywhere — there is nowhere to put it. The response returns both, so the
- * uploading client sees the mapping even though CLS's own screens will show the
- * stored name.
+ * name goes in the column, and the client's own filename survives only as the
+ * slug `middleware/upload.storedName` appends to it — enough for a human to tell
+ * a passport from a birth certificate on the portal's documents screen, not
+ * enough to reconstruct the name exactly. The response returns both, so the
+ * uploading client sees the mapping.
+ *
+ * Called from three places now, and the third is the reason the first two are
+ * worth naming: the portal's upload control, an order's own upload endpoint, and
+ * `POST /api/orders/documents`, which is what stores the scans a client attaches
+ * to the order form before they have an account at all. All three land in the
+ * same table keyed on the same `order_id`, which is why a guest order's documents
+ * appear in the portal the moment `orders.claim` stamps a `client_id` on the
+ * order — the portal resolves documents *through* the order, so nothing has to be
+ * re-pointed at the new account.
  *
  * Status is `UPLOADED` (1), not `APPROVED`. A document a client has just sent is
  * one CLS has not looked at, and the old application's review workflow moves it
