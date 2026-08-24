@@ -113,4 +113,23 @@ describe('lodgeVoucherOrder', () => {
       expect.anything()
     );
   });
+
+  it('writes the id into order_no, which is what CLS’s admin keys on', async () => {
+    await lodgeVoucherOrder({ ...order, tier: 'four-days' });
+
+    /**
+     * Their voucher queue links its View button with `order_id=` this column and
+     * the view behind it looks the order up by primary key, so a `'CLS-010034500'`
+     * here is a link to nothing — which is how a paid order became one their staff
+     * could not open. See `domain/orderReference`.
+     */
+    expect(orderUpdate).toHaveBeenCalledWith({ order_no: '10034500' }, expect.anything());
+  });
+
+  it('still answers with the reference the client is quoted', async () => {
+    const lodged = await lodgeVoucherOrder({ ...order, tier: 'four-days' });
+
+    // Derived from the id rather than read back from the column.
+    expect(lodged.reference).toBe('CLS-10034500');
+  });
 });

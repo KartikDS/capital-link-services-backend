@@ -16,6 +16,7 @@ import {
   UserAdmin,
   UserClient,
 } from '../../models';
+import { orderIdFromReference } from '../../domain/orderReference';
 import { LEGACY_SUBMITTED_FROM } from '../../domain/codes';
 
 /**
@@ -92,7 +93,27 @@ export const findClsOrderIdByReference = async (
 ): Promise<number | null> => {
   const trimmed = reference.trim();
 
-  // The common case: an exact match, which uses the column directly.
+  /**
+   * The website's own reference, read as the id it was derived from.
+   *
+   * This is now the common case: `order_no` holds the id CLS's admin keys on, so
+   * a client quoting `CLS-000012` is asking about row 12 and no string comparison
+   * will say so. The column matches below still run, because references issued
+   * while this API wrote `'CLS-000012'` into `order_no` are in clients' inboxes
+   * and have to keep resolving. See `domain/orderReference`.
+   */
+  const derived = orderIdFromReference(trimmed);
+
+  if (derived !== null) {
+    const row = await ClsOrder.findOne({
+      attributes: ['id'],
+      where: { id: derived },
+    });
+
+    if (row) return row.id;
+  }
+
+  // The exact match, which uses the column directly.
   const exact = await ClsOrder.findOne({
     attributes: ['id'],
     where: { order_no: trimmed },
@@ -290,9 +311,7 @@ export const findClsDocument = (id: number): Promise<ClsOrderDocuments | null> =
  * rejected, which is the one piece of information that turns "rejected" into
  * something they can act on.
  */
-export const listDocumentNotes = (
-  orderId: number
-): Promise<ClsOrderDocumentNotes[]> =>
+export const listDocumentNotes = (orderId: number): Promise<ClsOrderDocumentNotes[]> =>
   ClsOrderDocumentNotes.findAll({
     where: { order_id: orderId },
     order: [['created', 'DESC']],
@@ -323,7 +342,8 @@ export const listPayments = (orderNo: number): Promise<Payment[]> =>
 
 export const findPaymentByTransaction = (
   transactionId: string
-): Promise<Payment | null> => Payment.findOne({ where: { transaction_id: transactionId } });
+): Promise<Payment | null> =>
+  Payment.findOne({ where: { transaction_id: transactionId } });
 
 /** The consultant assigned to an order, from `visa_cls_team_member`. */
 export const findConsultant = (id: number | null): Promise<UserAdmin | null> => {
@@ -447,9 +467,7 @@ export const countLegacyOrders = (
  * than filtered on the document alone, because `tbl_cls_order_documents` has no
  * client column — a document only knows its order.
  */
-export const countOutstandingDocuments = async (
-  clientId: number
-): Promise<number> => {
+export const countOutstandingDocuments = async (clientId: number): Promise<number> => {
   const orders = await ClsOrder.findAll({
     attributes: ['id'],
     where: { client_id: clientId, ...CLS_SUBMITTED },

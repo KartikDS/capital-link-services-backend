@@ -31,6 +31,7 @@ import {
   LOG_AREA,
   PAYMENT_STATUS,
 } from '../../domain/codes';
+import { orderIdFromReference } from '../../domain/orderReference';
 import * as orderService from '../orders/orders.service';
 
 /**
@@ -159,24 +160,25 @@ adminRoutes.get(
   async (req: Request, res: Response) => {
     const query = validQuery<z.infer<typeof queueQuerySchema>>(req);
     const page = readPage(req);
+    const searchedId = query.search ? orderIdFromReference(query.search) : null;
 
     const { rows, count } = await ClsOrder.findAndCountAll({
       where: {
         date_submitted: { [Op.ne]: null },
         ...(query.status !== undefined ? { status: query.status } : {}),
         ...(query.orderType ? { order_type: query.orderType } : {}),
-        ...(query.consultantId
-          ? { visa_cls_team_member: query.consultantId }
-          : {}),
+        ...(query.consultantId ? { visa_cls_team_member: query.consultantId } : {}),
         ...(query.unassigned === 'true'
           ? { visa_cls_team_member: { [Op.is]: null } }
           : {}),
-        ...(query.unpaid === 'true'
-          ? { payment_status: PAYMENT_STATUS.FAILED }
-          : {}),
+        ...(query.unpaid === 'true' ? { payment_status: PAYMENT_STATUS.FAILED } : {}),
         ...(query.search
           ? {
               [Op.or]: [
+                // A staff member pasting the reference off the client's email.
+                // `order_no` holds the id, so `CLS-000012` has to be read as one
+                // — see `domain/orderReference`.
+                ...(searchedId !== null ? [{ id: searchedId }] : []),
                 { order_no: { [Op.like]: `%${query.search}%` } },
                 { contact_email: { [Op.like]: `%${query.search}%` } },
                 { contact_last_name: { [Op.like]: `%${query.search}%` } },
@@ -292,10 +294,7 @@ adminRoutes.patch(
  */
 adminRoutes.post(
   '/orders/:reference/notes',
-  validate(
-    z.object({ reference: z.string().trim().min(1).max(64) }),
-    'params'
-  ),
+  validate(z.object({ reference: z.string().trim().min(1).max(64) }), 'params'),
   validate(
     z.object({
       note: z.string().trim().min(1, 'Write a note').max(20_000),
@@ -460,12 +459,18 @@ adminRoutes.patch(
       );
     }
 
-    await (detail as unknown as {
-      update: (values: Record<string, string | null>) => Promise<unknown>;
-    }).update({ [column]: value });
+    await (
+      detail as unknown as {
+        update: (values: Record<string, string | null>) => Promise<unknown>;
+      }
+    ).update({ [column]: value });
     await order.update({ date_last_saved: toLegacyDateTime() });
 
-    await audit(req, 'order.milestone', { orderId: id, milestone: body.milestone, at: value });
+    await audit(req, 'order.milestone', {
+      orderId: id,
+      milestone: body.milestone,
+      at: value,
+    });
 
     ok(res, { orderId: id, milestone: body.milestone, at: toIso(value) });
   }
@@ -493,7 +498,10 @@ adminRoutes.patch(
   ),
   async (req: Request, res: Response) => {
     const { id } = validParams<{ id: number }>(req);
-    const body = req.body as { decision: 'approve' | 'reject' | 'reviewed'; note?: string };
+    const body = req.body as {
+      decision: 'approve' | 'reject' | 'reviewed';
+      note?: string;
+    };
 
     const document = await ClsOrderDocuments.findByPk(id);
     if (!document) throw notFound('We could not find that document.');
@@ -594,7 +602,12 @@ adminRoutes.post(
   async (req: Request, res: Response) => {
     const { reference } = validParams<{ reference: string }>(req);
     const body = req.body as {
-      lines: { description: string; quantity: number; unitCents: number; gstDollars?: number }[];
+      lines: {
+        description: string;
+        quantity: number;
+        unitCents: number;
+        gstDollars?: number;
+      }[];
       send?: boolean;
     };
 
@@ -666,8 +679,7 @@ adminRoutes.post(
         totalCents,
         sent: body.send !== false,
       },
-      note:
-        'GST is stored in whole dollars — tbl_order_dl_quotes.gst is an int(11), so cents of GST cannot be recorded.',
+      note: 'GST is stored in whole dollars — tbl_order_dl_quotes.gst is an int(11), so cents of GST cannot be recorded.',
     });
   }
 );
@@ -947,7 +959,11 @@ adminRoutes.get('/payments/reconcile', async (_req: Request, res: Response) => {
     limit: 500,
   });
 
-  const orphans: { paymentId: number; orderNo: number | null; amountCents: number | null }[] = [];
+  const orphans: {
+    paymentId: number;
+    orderNo: number | null;
+    amountCents: number | null;
+  }[] = [];
 
   for (const payment of payments) {
     if (payment.order_no === null) {
@@ -978,8 +994,7 @@ adminRoutes.get('/payments/reconcile', async (_req: Request, res: Response) => {
   ok(res, {
     orphans,
     checked: payments.length,
-    note:
-      'A payment with no matching order is money received against a reference nobody can find. Worth investigating each one.',
+    note: 'A payment with no matching order is money received against a reference nobody can find. Worth investigating each one.',
   });
 });
 

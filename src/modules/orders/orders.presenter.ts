@@ -27,6 +27,7 @@ import {
   type PortalStage,
   type TrackCategoryId,
 } from '../../domain/codes';
+import { orderReference } from '../../domain/orderReference';
 import { toConsultantView, type ConsultantView } from '../../domain/company';
 
 /**
@@ -154,12 +155,7 @@ const readMilestones = (
   completed: unknown,
   closed: unknown
 ): Milestones => {
-  const dates = [
-    toIso(received),
-    toIso(submitted),
-    toIso(completed),
-    toIso(closed),
-  ];
+  const dates = [toIso(received), toIso(submitted), toIso(completed), toIso(closed)];
 
   const reached = dates.filter((date) => date !== null).length;
 
@@ -204,7 +200,10 @@ const CLS_STATUS_ID: Record<number, string> = {
 
 /** The eager-loaded shape `orders.repository` returns for a detail read. */
 interface ClsOrderWithIncludes extends ClsOrder {
-  destinationCountry?: { country_name: string | null; country_name_display: string | null } | null;
+  destinationCountry?: {
+    country_name: string | null;
+    country_name_display: string | null;
+  } | null;
   travellers?: OrderTravellerDetails[];
   documents?: ClsOrderDocuments[];
   policeClearanceDetails?: {
@@ -228,7 +227,10 @@ interface ClsOrderWithIncludes extends ClsOrder {
 }
 
 const countryName = (
-  country: { country_name: string | null; country_name_display: string | null } | null | undefined
+  country:
+    | { country_name: string | null; country_name_display: string | null }
+    | null
+    | undefined
 ): string | null =>
   country ? clean(country.country_name_display ?? country.country_name) : null;
 
@@ -282,7 +284,9 @@ export const toOrderView = (
     fullName(order.contact_first_name, order.contact_last_name);
 
   return {
-    reference: clean(order.order_no) ?? String(order.id),
+    // Derived, not read: `order_no` on this table holds the id CLS's admin keys
+    // on. See `domain/orderReference`.
+    reference: orderReference(order.id),
     orderType: order.order_type ? (ORDER_TYPE_LABEL[order.order_type] ?? null) : null,
     orderTypeCode: order.order_type,
     service: order.order_type ? (ORDER_TYPE_LABEL[order.order_type] ?? null) : null,
@@ -309,9 +313,7 @@ export const toOrderView = (
     // `tbl_cls_order` holds no transaction id; it lives on `tbl_payment`, and
     // the service layer fills this in when it has read one.
     transactionId: null,
-    consultant: consultant
-      ? toConsultantView(consultant.name, consultant.email)
-      : null,
+    consultant: consultant ? toConsultantView(consultant.name, consultant.email) : null,
     actionRequired,
     source: 'cls_order',
   };
@@ -392,9 +394,7 @@ export const toLegacyOrderView = (
     quoteRequired: amountCents === null,
     paid: status >= LEGACY_ORDER_STATUS.PAID,
     transactionId: null,
-    consultant: consultant
-      ? toConsultantView(consultant.name, consultant.email)
-      : null,
+    consultant: consultant ? toConsultantView(consultant.name, consultant.email) : null,
     actionRequired: false,
     source: 'legacy_order',
   };
@@ -426,8 +426,7 @@ export const toCommentView = (note: OrderNotes, reference: string) => ({
    * side of the thread a message is drawn on, so the value is normalised here
    * rather than at each of the three places that read it.
    */
-  authorRole:
-    clean(note.user_type)?.toLowerCase() === 'client' ? 'Client' : 'Consultant',
+  authorRole: clean(note.user_type)?.toLowerCase() === 'client' ? 'Client' : 'Consultant',
   postedAt: toIso(note.date_added),
   body: clean(note.note) ?? '',
   // Only present when true. The website's type has it as `actionRequired?: true`,

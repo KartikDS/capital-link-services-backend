@@ -34,6 +34,7 @@ import {
   type Quote,
   type VoucherTier,
 } from '../../domain/quotes';
+import { orderReference } from '../../domain/orderReference';
 
 /**
  * Lodging a new order into the legacy tables.
@@ -61,17 +62,13 @@ import {
  *
  * ## The reference
  *
- * `order_no` is TEXT and there is no sequence behind it, so the reference is
- * derived from the auto-increment `id` *after* the insert and written back in
- * the same transaction. Deriving it from a timestamp or a random string instead
- * would risk a collision on a column with no unique index to catch one.
+ * There is no sequence behind `order_no` and nothing unique about it, so the
+ * order's identity is the auto-increment `id` and the client's reference is
+ * derived from it — `orderReference` in `domain/orderReference`, which is also
+ * where the reason `order_no` holds the id rather than the reference is written
+ * down. In short: CLS's own admin reads that column as an id, and an order it
+ * cannot open is worse than a column that repeats the primary key.
  */
-
-const REFERENCE_PREFIX = 'CLS';
-
-/** `1482` → `CLS-001482`. Padded so references sort and read consistently. */
-const referenceFor = (id: number): string =>
-  `${REFERENCE_PREFIX}-${String(id).padStart(6, '0')}`;
 
 export interface ApplicantInput {
   title?: string | null;
@@ -235,7 +232,16 @@ const createHeader = async (
     { transaction }
   );
 
-  await order.update({ order_no: referenceFor(order.id) }, { transaction });
+  /**
+   * The id, written back into `order_no` now that the insert has produced one.
+   *
+   * Not the client's reference, which is what this used to write. CLS's admin
+   * treats this column as an order id — its voucher queue links its View button
+   * with `order_id=` this value and the view behind it looks the order up by
+   * primary key — so a `'CLS-000010'` here is a link to nothing, and their staff
+   * could not open a paid order. See `domain/orderReference`.
+   */
+  await order.update({ order_no: String(order.id) }, { transaction });
 
   await createCourierDetails(order, input, transaction);
 
@@ -391,18 +397,16 @@ export interface LodgedOrder {
 }
 
 const finish = (order: ClsOrder, quote: Quote): LodgedOrder => {
+  const reference = orderReference(order.id);
+
   logger.info('Order lodged', {
     orderId: order.id,
-    reference: order.order_no,
+    reference,
     orderType: order.order_type,
     totalCents: quote.quoteRequired ? null : quote.totalCents,
   });
 
-  return {
-    reference: clean(order.order_no) ?? referenceFor(order.id),
-    orderId: order.id,
-    quote,
-  };
+  return { reference, orderId: order.id, quote };
 };
 
 // ---------------------------------------------------------------------------

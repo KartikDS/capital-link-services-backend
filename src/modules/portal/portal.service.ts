@@ -12,6 +12,7 @@ import { toLegacyDate, toLegacyDateTime } from '../../shared/dates';
 import { clean } from '../../shared/text';
 import { logger } from '../../shared/logger';
 import { DOCUMENT_STATUS, ENABLED } from '../../domain/codes';
+import { orderIdFromReference, orderReference } from '../../domain/orderReference';
 import { toConsultantView } from '../../domain/company';
 import * as orders from '../orders/orders.service';
 import * as orderRepository from '../orders/orders.repository';
@@ -158,7 +159,11 @@ export const saveAddress = async (
 
   return {
     address:
-      kind === 'account' ? view.address : kind === 'delivery' ? view.delivery : view.billing,
+      kind === 'account'
+        ? view.address
+        : kind === 'delivery'
+          ? view.delivery
+          : view.billing,
     ignored: address.line2 ? ['line2'] : [],
   };
 };
@@ -241,11 +246,20 @@ export const documents = async (
   clientId: number,
   options: { reference?: string; limit: number }
 ) => {
+  /**
+   * Filtered by id when the reference is one of ours, by the column when it is
+   * not. `order_no` holds the id CLS's admin keys on, so `CLS-000012` never
+   * matches it as a string — see `domain/orderReference`. The column comparison
+   * stays for the references issued while this API wrote them into `order_no`.
+   */
+  const asId = options.reference ? orderIdFromReference(options.reference) : null;
+
   const ownedOrders = await ClsOrder.findAll({
     attributes: ['id', 'order_no'],
     where: {
       client_id: clientId,
-      ...(options.reference ? { order_no: options.reference } : {}),
+      ...(asId !== null ? { id: asId } : {}),
+      ...(options.reference && asId === null ? { order_no: options.reference } : {}),
     },
     limit: 500,
   });
@@ -253,7 +267,7 @@ export const documents = async (
   if (ownedOrders.length === 0) return [];
 
   const referenceOf = new Map(
-    ownedOrders.map((order) => [order.id, clean(order.order_no) ?? String(order.id)])
+    ownedOrders.map((order) => [order.id, orderReference(order.id)])
   );
 
   const orderIds = [...referenceOf.keys()];
@@ -304,9 +318,7 @@ export const documents = async (
 
   const dated = uploaded
     .map((row) => toDocumentView(row, referenceOf.get(row.order_id ?? 0) ?? '—'))
-    .sort((left, right) =>
-      (right.createdAt ?? '').localeCompare(left.createdAt ?? '')
-    );
+    .sort((left, right) => (right.createdAt ?? '').localeCompare(left.createdAt ?? ''));
 
   const room = Math.max(0, options.limit - declared.length);
 
@@ -340,10 +352,7 @@ const parseDocumentId = (
 };
 
 /** True when the order exists and belongs to the caller. Same answer for both. */
-const ownsOrder = async (
-  clientId: number,
-  orderId: number | null
-): Promise<boolean> => {
+const ownsOrder = async (clientId: number, orderId: number | null): Promise<boolean> => {
   if (!orderId) return false;
 
   const order = await ClsOrder.findOne({
@@ -558,7 +567,7 @@ const outstandingDocumentSummaries = async (clientId: number) => {
   if (ownedOrders.length === 0) return [];
 
   const referenceOf = new Map(
-    ownedOrders.map((order) => [order.id, clean(order.order_no) ?? String(order.id)])
+    ownedOrders.map((order) => [order.id, orderReference(order.id)])
   );
 
   const rows = await ClsOrderDocuments.findAll({
