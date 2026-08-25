@@ -30,6 +30,15 @@ export const authRoutes = Router();
 const credentialsSchema = z.object({
   email: emailField,
   password: z.string().min(1, 'Enter your password'),
+  /**
+   * Which credentials to check, defaulting to the client portal's.
+   *
+   * Absent means `client`, so a caller that says nothing gets the website's
+   * behaviour: `tbl_user_client` only, and a staff address is refused with the
+   * same sentence as a wrong password. `admin` is the back office asking for a
+   * staff token for `/api/admin/*`, and it has to say so.
+   */
+  audience: z.enum(['client', 'admin']).optional(),
 });
 
 const registerSchema = z.object({
@@ -49,14 +58,20 @@ const registerSchema = z.object({
  *
  * Rate limited on IP *and* email, so a rotating-IP attack cannot work through
  * one account and a shared office connection cannot lock out its colleagues.
+ *
+ * Client credentials unless `audience` says otherwise — a member of staff
+ * signing in on the website is refused exactly as a wrong password is. See the
+ * note on `service.signIn`.
  */
 authRoutes.post(
   '/login',
   limits.signIn,
   validate(credentialsSchema),
   async (req: Request, res: Response) => {
-    const { email, password } = req.body as z.infer<typeof credentialsSchema>;
-    const session = await service.signIn(email, password);
+    const { email, password, audience } = req.body as z.infer<
+      typeof credentialsSchema
+    >;
+    const session = await service.signIn(email, password, audience ?? 'client');
 
     ok(res, session);
   }

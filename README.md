@@ -156,6 +156,13 @@ Clients live in `tbl_user_client` and staff in `tbl_user_admin` — separate tab
 with no shared key — so a token records which table it came from and admin routes
 accept only the `admin` audience.
 
+**One table per sign-in, and it is the client table by default.** `login` takes an
+optional `audience` (`client` | `admin`); omitted, only `tbl_user_client` is
+checked, so a member of staff typing their back-office credentials into the
+website is refused with the same wording as a wrong password. A back office asks
+for `audience: "admin"` explicitly — that is the only way a staff token is
+issued, and it is deliberately not something a caller reaches by default.
+
 **Existing passwords may be bcrypt, double MD5, MD5, SHA-1 or SHA-256.** The
 schema does not say which; all are verified so five years of clients can sign in
 with the password they already have. New passwords are always bcrypt. Set

@@ -168,6 +168,20 @@ const recordSuccessfulSignIn = async (
 };
 
 /**
+ * Which set of credentials a sign-in is allowed to match.
+ *
+ * There is no role column anywhere: staff live in `tbl_user_admin` and clients
+ * in `tbl_user_client`, two tables with no shared key, so "what is this account"
+ * is answered by which table the row came out of. That makes the caller's
+ * intended audience the only sensible input — the door decides which table is
+ * consulted, rather than the row deciding which door it came through.
+ */
+export type SignInAudience = 'client' | 'admin';
+
+/** The one thing every refusal says. See the note on `signIn`. */
+const REFUSED = 'Check your email address and password.';
+
+/**
  * Email and password to a session.
  *
  * One message for every failure — unknown address, wrong password, disabled
@@ -178,17 +192,42 @@ const recordSuccessfulSignIn = async (
  * The password is verified even when no account was found, against a throwaway
  * hash. Skipping that returns "no such user" measurably faster than "wrong
  * password", which reintroduces exactly the oracle the shared message removes.
+ *
+ * ## One audience per attempt, and it defaults to the client
+ *
+ * This used to try `tbl_user_client` and then fall back to `tbl_user_admin`, so a
+ * member of staff could sign in on the client portal with their back-office
+ * credentials. The session they got was useless — the audience is stamped on the
+ * token and `/api/portal/*` refuses anything that is not a client — so what it
+ * actually produced was a signed-in staff member looking at a portal that
+ * refused every read on it. **Staff credentials are now simply not accepted
+ * here**, and the refusal is the same sentence as a wrong password: an admin who
+ * types their back-office details into the portal is told the pair did not
+ * match, which is both true and the only answer that does not confirm to a
+ * stranger that the address belongs to CLS staff.
+ *
+ * `audience: 'admin'` is how the back office asks instead — `/api/admin/*` needs
+ * a staff token from somewhere, and this is the one place that mints one. It has
+ * to be asked for explicitly, so no caller reaches it by accident and the portal
+ * cannot reach it at all.
+ *
+ * Only the requested table is queried, which also keeps the timing honest: a
+ * client address and a staff address take the same one lookup, so the response
+ * time cannot be used to tell a staff account from an unknown one.
  */
 export const signIn = async (
   email: string,
-  password: string
+  password: string,
+  audience: SignInAudience = 'client'
 ): Promise<Session> => {
   const normalised = normaliseEmail(email);
 
-  if (!normalised) throw unauthorized('Check your email address and password.');
+  if (!normalised) throw unauthorized(REFUSED);
 
-  const client = await repository.findClientByEmail(normalised);
-  const admin = client ? null : await repository.findAdminByEmail(normalised);
+  const client =
+    audience === 'client' ? await repository.findClientByEmail(normalised) : null;
+  const admin =
+    audience === 'admin' ? await repository.findAdminByEmail(normalised) : null;
   const row = client ?? admin;
 
   // `NEVER_MATCHES` rather than a hash written out here: the literal that used
@@ -199,8 +238,12 @@ export const signIn = async (
   const result = await verifyPassword(password, row?.password ?? NEVER_MATCHES);
 
   if (!row || !result.valid) {
-    logger.info('Sign-in refused', { email: normalised, found: Boolean(row) });
-    throw unauthorized('Check your email address and password.');
+    logger.info('Sign-in refused', {
+      email: normalised,
+      audience,
+      found: Boolean(row),
+    });
+    throw unauthorized(REFUSED);
   }
 
   const user = client ? clientToUser(client) : adminToUser(admin as UserAdmin);

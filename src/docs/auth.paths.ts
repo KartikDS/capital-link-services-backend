@@ -30,9 +30,22 @@ export const authPaths = {
       tag,
       summary: 'Email and password to a session',
       description:
-        'Checks `tbl_user_client` then `tbl_user_admin`. Existing bcrypt, MD5 and SHA-1 hashes are all accepted. Every failure returns the same message, so the endpoint cannot be used to discover which addresses are registered.\n\nRate limited on IP **and** email, so a rotating-IP attack cannot work through one account and a shared office connection cannot lock out its colleagues.',
+        'Checks **one** user table: `tbl_user_client` by default, or `tbl_user_admin` when `audience` is `admin`. Existing bcrypt, MD5 and SHA-1 hashes are all accepted. Every failure returns the same message, so the endpoint cannot be used to discover which addresses are registered.\n\nStaff credentials are therefore refused on a default (client) sign-in, with the same wording as a wrong password — the website has no back office in it, and the audience stamped on a token decides what the token can read. A caller that wants a staff token for `/api/admin/*` has to ask for it.\n\nRate limited on IP **and** email, so a rotating-IP attack cannot work through one account and a shared office connection cannot lock out its colleagues.',
       body: {
-        schema: body({ email: f.email(), password: f.string() }, ['email', 'password']),
+        schema: body(
+          {
+            email: f.email(),
+            password: f.string(),
+            audience: {
+              type: 'string',
+              enum: ['client', 'admin'],
+              default: 'client',
+              description:
+                'Which credentials to check. Omit it for the client portal; `admin` is the back office asking for a staff token.',
+            },
+          },
+          ['email', 'password']
+        ),
       },
       responses: {
         200: okRef('Signed in', 'Session'),

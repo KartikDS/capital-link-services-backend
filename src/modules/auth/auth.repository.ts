@@ -10,8 +10,10 @@ import { ENABLED } from '../../domain/codes';
  * Two user tables, not one. `tbl_user_client` holds clients and
  * `tbl_user_admin` holds staff, with no shared key and no role column between
  * them — so "find the user with this email" is two lookups, and an email could
- * in principle exist in both. Client is checked first, because that is who signs
- * in through the website.
+ * in principle exist in both. Which of the two is consulted is the caller's
+ * choice rather than a fallback chain: `signIn` looks in one table per attempt,
+ * and the website's sign-in only ever asks for the client one. See the note on
+ * `signIn` for why staff credentials are not accepted there.
  *
  * `tbl_user_embassy` and `tbl_user_tpn` are two further sets of credentials in
  * this schema. They are not wired into sign-in: nothing on the website signs an
