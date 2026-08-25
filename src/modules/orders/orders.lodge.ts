@@ -502,6 +502,15 @@ export interface VoucherOrderInput {
   applicants: readonly ApplicantInput[];
   entryDate?: string | null;
   departureDate?: string | null;
+  /**
+   * The second visit, for a voucher raised on more than one entry.
+   *
+   * Written whether or not the plan says it should be: the website only collects
+   * a second pair where the voucher has one, and a date the client gave is not
+   * something to drop on a guess about which plan they bought.
+   */
+  secondEntryDate?: string | null;
+  secondDepartureDate?: string | null;
   cities?: string | null;
   hotels?: string | null;
   appliedAt?: string | null;
@@ -583,6 +592,8 @@ export const lodgeVoucherOrder = async (
         voucher_col_cost: centsToLegacyString(quote.lines[0]?.unitCents ?? null),
         first_entry_date: dateOnlyForWrite(input.entryDate),
         first_departure_date: dateOnlyForWrite(input.departureDate),
+        double_entry_date: dateOnlyForWrite(input.secondEntryDate),
+        double_departure_date: dateOnlyForWrite(input.secondDepartureDate),
         list_of_cities: clean(input.cities),
         list_of_hotels: clean(input.hotels),
         visa_applied_at: clean(input.appliedAt),

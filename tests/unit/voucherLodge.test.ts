@@ -126,6 +126,43 @@ describe('lodgeVoucherOrder', () => {
     expect(orderUpdate).toHaveBeenCalledWith({ order_no: '10034500' }, expect.anything());
   });
 
+  it('records the second visit in the columns the old application uses', async () => {
+    await lodgeVoucherOrder({
+      ...order,
+      tier: 'four-days',
+      entryDate: '2026-10-01',
+      departureDate: '2026-10-14',
+      secondEntryDate: '2026-12-01',
+      secondDepartureDate: '2026-12-10',
+    });
+
+    /**
+     * `ApplicationRussianVisaVoucherController:471` writes the second pair to
+     * `double_*` for any voucher that is not single entry. The website used to
+     * fold these into the order note, which put the dates the second invitation
+     * is raised from somewhere nobody's form field could show them.
+     */
+    expect(voucherDetailsCreate.mock.calls[0][0]).toMatchObject({
+      first_entry_date: '2026-10-01',
+      first_departure_date: '2026-10-14',
+      double_entry_date: '2026-12-01',
+      double_departure_date: '2026-12-10',
+    });
+  });
+
+  it('records where the visa will be lodged, verbatim', async () => {
+    const appliedAt =
+      'The Russian Embassy, 78 Canberra Avenue, Griffith ACT– CANBERRA AUSTRALIA';
+
+    await lodgeVoucherOrder({ ...order, tier: 'four-days', appliedAt });
+
+    // Stored exactly as given: their admin matches this against its own literal
+    // to decide which "Visa to be applied at" radio to check.
+    expect(voucherDetailsCreate.mock.calls[0][0]).toMatchObject({
+      visa_applied_at: appliedAt,
+    });
+  });
+
   it('still answers with the reference the client is quoted', async () => {
     const lodged = await lodgeVoucherOrder({ ...order, tier: 'four-days' });
 

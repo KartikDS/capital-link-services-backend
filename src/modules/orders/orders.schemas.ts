@@ -118,9 +118,7 @@ export const clearanceQuoteSchema = z.object({
  * named columns, and `tier: 3` would leave a caller guessing whether that meant
  * the third column or the three-day service.
  */
-export const voucherTierField = z.enum(
-  VOUCHER_TIER_IDS as [string, ...string[]]
-);
+export const voucherTierField = z.enum(VOUCHER_TIER_IDS as [string, ...string[]]);
 
 export const voucherOrderSchema = z.object({
   voucherTypeId: id,
@@ -129,6 +127,9 @@ export const voucherOrderSchema = z.object({
   applicants: applicantsField,
   entryDate: dateField.optional().nullable(),
   departureDate: dateField.optional().nullable(),
+  /** The second visit: `double_entry_date` and `double_departure_date`. */
+  secondEntryDate: dateField.optional().nullable(),
+  secondDepartureDate: dateField.optional().nullable(),
   cities: z.string().trim().max(255).optional().nullable(),
   hotels: z.string().trim().max(2000).optional().nullable(),
   appliedAt: z.string().trim().max(255).optional().nullable(),
@@ -270,9 +271,7 @@ export const myOrdersQuerySchema = z.object({
   page: z.coerce.number().int().positive().optional(),
   perPage: z.coerce.number().int().positive().max(100).optional(),
   orderType: z.coerce.number().int().min(1).max(9).optional(),
-  stage: z
-    .enum(['action-required', 'in-progress', 'ready', 'completed'])
-    .optional(),
+  stage: z.enum(['action-required', 'in-progress', 'ready', 'completed']).optional(),
 });
 
 export const referenceParamSchema = z.object({
