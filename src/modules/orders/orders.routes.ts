@@ -12,6 +12,7 @@ import { badRequest, notFound } from '../../shared/errors';
 import { created, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { validate, validParams, validQuery } from '../../shared/validation';
+import { destinationCountryId } from '../../domain/countries';
 import {
   quoteClearance,
   quoteLegalisation,
@@ -233,6 +234,21 @@ orderRoutes.use('/drafts', draftRoutes);
  */
 const ownerOf = (req: Request): number | null => req.auth?.sub ?? null;
 
+/**
+ * The country id a destination should be recorded against.
+ *
+ * Thin wrapper over `domain/countries`, which never throws: where the slug
+ * resolves it wins, and where it cannot the caller's id stands. So there is no
+ * failure path to map to a status here — an order is never refused over its
+ * destination, it is simply recorded against the row this database agrees is the
+ * country the client named.
+ */
+const resolveDestination = async (
+  slug: string | null | undefined,
+  id: number,
+  journey: string
+): Promise<number> => (await destinationCountryId({ slug, id, journey })) ?? id;
+
 
 /** POST /api/orders/police-clearance */
 orderRoutes.post(
@@ -301,7 +317,15 @@ orderRoutes.post(
   lodgeLegalisation
 );
 
-/** POST /api/orders/visa */
+/**
+ * POST /api/orders/visa
+ *
+ * The destination is resolved from the slug the website named rather than taken
+ * from the integer it sent — see `domain/countries` for the failure that
+ * motivated it. Where the two disagree the slug wins and the drift is logged: it
+ * is the answer read from this database, so it is the one that names the country
+ * the client actually chose.
+ */
 orderRoutes.post(
   '/visa',
   authenticateOptional,
@@ -309,8 +333,15 @@ orderRoutes.post(
   async (req: Request, res: Response) => {
     const body = req.body as schemas.VisaOrderBody;
 
+    const destinationCountryId = await resolveDestination(
+      body.destinationCountrySlug,
+      body.destinationCountryId,
+      'Visa order'
+    );
+
     const result = await lodge.lodgeVisaOrder({
       ...body,
+      destinationCountryId,
       // `optionalId` yields `undefined` when the field is absent and `null` when
       // it is sent as null; the lodgement takes one shape for "not known".
       visaTypeId: body.visaTypeId ?? null,

@@ -190,3 +190,25 @@ export const toBoolean = (value: unknown): boolean => {
   }
   return false;
 };
+
+/**
+ * `United Arab Emirates` → `united-arab-emirates`.
+ *
+ * Shared rather than owned by the lookups presenter, because two places have to
+ * agree on it exactly: the slug published alongside every country in
+ * `/api/lookups/countries`, and `domain/countries`, which turns the slug an
+ * order names back into the row it came from. A second copy of this rule that
+ * drifted by one character would resolve an order to a different country than
+ * the one the website offered.
+ */
+export const slugify = (value: string | null): string | null => {
+  const text = clean(value);
+  if (!text) return null;
+
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+};

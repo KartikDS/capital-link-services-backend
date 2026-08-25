@@ -20,6 +20,26 @@ import { dateField, emailField, phoneField } from '../../shared/validation';
 const id = z.coerce.number().int().positive();
 const optionalId = id.optional().nullable();
 
+/**
+ * A country as the website names it — `'saudi-arabia'`, not `2`.
+ *
+ * Sent alongside the id the website resolved for it, and `domain/countries`
+ * resolves it again here before the order is written. An integer means whatever
+ * `tbl_countries` says it means in the database that reads it, so an id resolved
+ * against some other copy of the list is a country the client never chose. The
+ * slug is the only part of a destination that still says what it means after it
+ * crosses a database boundary.
+ *
+ * Optional throughout, so a caller that sends only an id keeps working.
+ */
+const countrySlug = z
+  .string()
+  .trim()
+  .max(120)
+  .regex(/^[a-z0-9-]+$/, 'That is not a country the website offers')
+  .optional()
+  .nullable();
+
 export const applicantSchema = z.object({
   title: z.string().trim().max(255).optional().nullable(),
   firstName: z.string().trim().min(1, 'Enter the applicant’s first name').max(255),
@@ -221,6 +241,11 @@ export const visaOrderSchema = z.object({
    */
   visaTypeId: optionalId,
   destinationCountryId: id,
+  /**
+   * The destination as the website named it, which decides the id actually
+   * recorded. See `countrySlug` above and `domain/countries`.
+   */
+  destinationCountrySlug: countrySlug,
   contact: contactSchema,
   applicants: applicantsField,
   entryOption: z.coerce.number().int().min(1).max(3).optional().nullable(),

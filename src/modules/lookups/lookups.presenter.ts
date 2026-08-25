@@ -19,7 +19,14 @@ import type {
   WeightPrice,
 } from '../../models';
 import { toCents } from '../../shared/money';
-import { clean, cleanOr, stripHtml, toBoolean, truncate } from '../../shared/text';
+import {
+  clean,
+  cleanOr,
+  slugify,
+  stripHtml,
+  toBoolean,
+  truncate,
+} from '../../shared/text';
 import { ENTRY_OPTION_LABEL } from '../../domain/codes';
 
 /**
@@ -39,18 +46,14 @@ import { ENTRY_OPTION_LABEL } from '../../domain/codes';
  * application" — which is what CLS means by it.
  */
 
-/** `United Arab Emirates` → `united-arab-emirates`. */
-export const slugify = (value: string | null): string | null => {
-  const text = clean(value);
-  if (!text) return null;
-
-  return text
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-};
+/**
+ * Re-exported so callers that already have the presenter keep working.
+ *
+ * The rule itself lives in `shared/text`: `domain/countries` needs the same one
+ * to resolve an order's destination, and it has no business importing a
+ * presenter to get it.
+ */
+export { slugify };
 
 export interface CountryView {
   id: number;

@@ -259,7 +259,7 @@ export const orderPaths = {
       tag,
       summary: 'Lodge a visa order',
       description:
-        'Writes `tbl_cls_order` plus its visa detail and applicant rows.\n\n**`visaTypeId` may be null.** The corporate journey collects a visa *category* from the list a service page publishes rather than a catalogue row, and the two have no shared key — guessing which row a category means would put a wrong fee on the order. So a null type records the destination, answers `quoteRequired: true`, and a consultant confirms the type.',
+        'Writes `tbl_cls_order` plus its visa detail and applicant rows.\n\n**Send `destinationCountrySlug`.** An id is only meaningful in the database it was resolved from, and a caller resolving one against its own copy of the country list is not that database. Where the slug is present it is resolved here and its answer is the one recorded, including when it disagrees with `destinationCountryId` — the disagreement is logged, not refused. Where the slug matches nothing, or two rows, `destinationCountryId` stands.\n\n**`visaTypeId` may be null.** The corporate journey collects a visa *category* from the list a service page publishes rather than a catalogue row, and the two have no shared key — guessing which row a category means would put a wrong fee on the order. So a null type records the destination, answers `quoteRequired: true`, and a consultant confirms the type.',
       auth: 'bearer',
       body: {
         schema: body(
@@ -268,6 +268,9 @@ export const orderPaths = {
               '`tbl_public_visa_types.id`, or null when it is not known yet.'
             ),
             destinationCountryId: f.int('`tbl_countries.id`.'),
+            destinationCountrySlug: f.string(
+              'The destination as the website names it — `saudi-arabia`. Resolved here against `tbl_countries`, and its answer wins over `destinationCountryId`.'
+            ),
             contact,
             applicants,
             entryOption: f.id(
