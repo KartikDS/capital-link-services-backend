@@ -235,19 +235,66 @@ orderRoutes.use('/drafts', draftRoutes);
 const ownerOf = (req: Request): number | null => req.auth?.sub ?? null;
 
 /**
- * The country id a destination should be recorded against.
+ * The country id a field should be recorded against.
  *
  * Thin wrapper over `domain/countries`, which never throws: where the slug
  * resolves it wins, and where it cannot the caller's id stands. So there is no
- * failure path to map to a status here — an order is never refused over its
- * destination, it is simply recorded against the row this database agrees is the
- * country the client named.
+ * failure path to map to a status here — an order is never refused over a
+ * country, it is simply recorded against the row this database agrees the client
+ * named.
+ *
+ * Every country on every journey goes through here: destinations, the document's
+ * country of origin, the requesting country on a clearance, each applicant's
+ * nationality and the return address. They are one bug, not seven — an id
+ * resolved somewhere else means whatever that integer happens to name here.
  */
-const resolveDestination = async (
+const resolveCountry = async (
   slug: string | null | undefined,
-  id: number,
+  id: number | null | undefined,
   journey: string
-): Promise<number> => (await destinationCountryId({ slug, id, journey })) ?? id;
+): Promise<number | null> => destinationCountryId({ slug, id, journey });
+
+/**
+ * The return address, with its country resolved.
+ *
+ * Kept separate because this is the one country field that moves a parcel: it is
+ * where CLS couriers the finished passports and documents back to. A wrong row
+ * here is not a label in an admin screen, it is a delivery to another country.
+ */
+const resolveReturnAddress = async <
+  T extends { countryId?: number | null; countrySlug?: string | null },
+>(
+  address: T | undefined,
+  journey: string
+): Promise<T | undefined> =>
+  address
+    ? {
+        ...address,
+        countryId: await resolveCountry(
+          address.countrySlug,
+          address.countryId,
+          `${journey} return address`
+        ),
+      }
+    : undefined;
+
+/** Each applicant's nationality, resolved the same way. */
+const resolveApplicants = async <
+  T extends { nationalityId?: number | null; nationalitySlug?: string | null },
+>(
+  applicants: readonly T[],
+  journey: string
+): Promise<T[]> =>
+  Promise.all(
+    applicants.map(async (applicant) => ({
+      ...applicant,
+      nationalityId: await resolveCountry(
+        applicant.nationalitySlug,
+        applicant.nationalityId,
+        `${journey} applicant nationality`
+      ),
+    }))
+  );
 
 
 /** POST /api/orders/police-clearance */
@@ -257,9 +304,13 @@ orderRoutes.post(
   validate(schemas.clearanceOrderSchema),
   async (req: Request, res: Response) => {
     const body = req.body as schemas.ClearanceOrderBody;
+    const journey = 'Police clearance order';
 
     const result = await lodge.lodgeClearanceOrder({
       ...body,
+      countryId: await resolveCountry(body.countrySlug, body.countryId, journey),
+      applicants: await resolveApplicants(body.applicants, journey),
+      returnAddress: await resolveReturnAddress(body.returnAddress, journey),
       clientId: ownerOf(req),
     });
 
@@ -274,10 +325,24 @@ orderRoutes.post(
   validate(schemas.voucherOrderSchema),
   async (req: Request, res: Response) => {
     const body = req.body as schemas.VoucherOrderBody;
+    const journey = 'Russian voucher order';
 
     const result = await lodge.lodgeVoucherOrder({
       ...body,
       tier: body.tier as VoucherTier,
+      applicants: await resolveApplicants(body.applicants, journey),
+      // The employer's country travels on the invitation itself, so it is as
+      // much a fact of the order as the traveller's nationality.
+      employer: body.employer
+        ? {
+            ...body.employer,
+            countryId: await resolveCountry(
+              body.employer.countrySlug,
+              body.employer.countryId,
+              `${journey} employer`
+            ),
+          }
+        : undefined,
       clientId: ownerOf(req),
     });
 
@@ -294,9 +359,27 @@ orderRoutes.post(
  */
 const lodgeLegalisation = async (req: Request, res: Response): Promise<void> => {
   const body = req.body as schemas.LegalisationOrderBody;
+  const journey = 'Legalisation order';
 
   const result = await lodge.lodgeLegalisationOrder({
     ...body,
+    // The destination decides which authority legalises the documents; the
+    // origin decides whether an apostille is available at all. Both are resolved
+    // from the name the client chose, in this database.
+    destinationCountryId: await resolveCountry(
+      body.destinationCountrySlug,
+      body.destinationCountryId,
+      `${journey} destination`
+    ),
+    nationalityCountryId: await resolveCountry(
+      body.nationalityCountrySlug,
+      body.nationalityCountryId,
+      `${journey} origin`
+    ),
+    applicants: body.applicants
+      ? await resolveApplicants(body.applicants, journey)
+      : undefined,
+    returnAddress: await resolveReturnAddress(body.returnAddress, journey),
     clientId: ownerOf(req),
   });
 
@@ -333,15 +416,20 @@ orderRoutes.post(
   async (req: Request, res: Response) => {
     const body = req.body as schemas.VisaOrderBody;
 
-    const destinationCountryId = await resolveDestination(
-      body.destinationCountrySlug,
-      body.destinationCountryId,
-      'Visa order'
-    );
+    const journey = 'Visa order';
+
+    const destinationCountryId =
+      (await resolveCountry(
+        body.destinationCountrySlug,
+        body.destinationCountryId,
+        `${journey} destination`
+      )) ?? body.destinationCountryId;
 
     const result = await lodge.lodgeVisaOrder({
       ...body,
       destinationCountryId,
+      applicants: await resolveApplicants(body.applicants, journey),
+      returnAddress: await resolveReturnAddress(body.returnAddress, journey),
       // `optionalId` yields `undefined` when the field is absent and `null` when
       // it is sent as null; the lodgement takes one shape for "not known".
       visaTypeId: body.visaTypeId ?? null,

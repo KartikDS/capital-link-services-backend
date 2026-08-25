@@ -70,16 +70,68 @@ export type CountryMatch =
  * `Timor-Leste` all lose characters on the way in — so there is no `WHERE` that
  * inverts it. 237 rows, on a path that runs once per order.
  */
+/**
+ * The country table, held for half a minute.
+ *
+ * An order can name several countries — a destination, an origin, a return
+ * address, a nationality per applicant — and resolving each with its own
+ * `findAll` would read the same 237 rows five or six times for one lodgement.
+ *
+ * This is emphatically **not** the kind of cache that caused the bug this module
+ * exists for. That one was a website holding a snapshot of a *different*
+ * database across a process lifetime. This is the API's own table, on its own
+ * connection, re-read every thirty seconds — the window in which somebody would
+ * have to rename a country in the old admin *and* have an order name it, to see
+ * a stale answer that a retry corrects.
+ */
+const CACHE_MS = 30_000;
+
+interface CountryRow {
+  id: number;
+  country_name: string | null;
+  country_name_display: string | null;
+}
+
+/**
+ * The *promise*, not the rows.
+ *
+ * An order resolves its countries concurrently — `Promise.all` over the
+ * applicants, and the destination and origin alongside them — so caching the
+ * settled value alone would cache nothing: every read starts before the first
+ * one returns, and each does its own query. Holding the in-flight promise is
+ * what makes six fields on one lodgement a single scan.
+ */
+let cache: { rows: Promise<CountryRow[]>; at: number } | null = null;
+
+/** Test seam, and the way to force a re-read after editing `tbl_countries`. */
+export const resetCountryCache = (): void => {
+  cache = null;
+};
+
+const countryRows = (): Promise<CountryRow[]> => {
+  if (cache && Date.now() - cache.at < CACHE_MS) return cache.rows;
+
+  const rows = Countries.findAll({
+    where: notDisabled,
+    attributes: ['id', 'country_name', 'country_name_display'],
+  }).catch((error: unknown) => {
+    // A failed read must not be held for thirty seconds — the next order should
+    // try the database again rather than inherit the outage.
+    cache = null;
+    throw error;
+  });
+
+  cache = { rows, at: Date.now() };
+  return rows;
+};
+
 export const resolveCountrySlug = async (
   slug: string
 ): Promise<CountryMatch> => {
   const wanted = slugify(slug);
   if (!wanted) return { kind: 'unknown' };
 
-  const rows = await Countries.findAll({
-    where: notDisabled,
-    attributes: ['id', 'country_name', 'country_name_display'],
-  });
+  const rows = await countryRows();
 
   for (const column of ['country_name', 'country_name_display'] as const) {
     const matches = rows.filter((row) => slugify(row[column]) === wanted);

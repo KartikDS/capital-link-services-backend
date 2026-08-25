@@ -305,6 +305,12 @@ export const orderPaths = {
             contact,
             destinationCountryId: f.id('Where the documents are going.'),
             nationalityCountryId: f.id('Where they were issued.'),
+            destinationCountrySlug: f.string(
+              'Where the documents are going, as the website names it — `saudi-arabia`. Resolved here against `tbl_countries`; its answer wins over `destinationCountryId`.'
+            ),
+            nationalityCountrySlug: f.string(
+              'Where they were issued, as the website names it. Its answer wins over `nationalityCountryId`, and it is what decides whether an apostille is available.'
+            ),
             documents: {
               type: 'array',
               minItems: 1,
@@ -340,6 +346,12 @@ export const orderPaths = {
             contact,
             destinationCountryId: f.id('Where the documents are going.'),
             nationalityCountryId: f.id('Where they were issued.'),
+            destinationCountrySlug: f.string(
+              'Where the documents are going, as the website names it — `saudi-arabia`. Resolved here against `tbl_countries`; its answer wins over `destinationCountryId`.'
+            ),
+            nationalityCountrySlug: f.string(
+              'Where they were issued, as the website names it. Its answer wins over `nationalityCountryId`, and it is what decides whether an apostille is available.'
+            ),
             documents: {
               type: 'array',
               minItems: 1,

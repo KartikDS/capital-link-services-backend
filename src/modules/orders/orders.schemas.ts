@@ -49,6 +49,8 @@ export const applicantSchema = z.object({
   phone: phoneField.optional().nullable(),
   dateOfBirth: dateField.optional().nullable(),
   nationalityId: optionalId,
+  /** The nationality as the website names it. Decides `nationalityId`. */
+  nationalitySlug: countrySlug,
   passportNumber: z.string().trim().max(255).optional().nullable(),
   passportType: optionalId,
   passportIssueDate: dateField.optional().nullable(),
@@ -91,6 +93,14 @@ export const returnAddressSchema = z.object({
   state: z.string().trim().max(255).optional().nullable(),
   postcode: z.string().trim().max(255).optional().nullable(),
   countryId: optionalId,
+  /**
+   * The country as the website names it. Decides `countryId`.
+   *
+   * This is the address CLS couriers the finished documents back to, so of every
+   * country field on an order it is the one where a wrong row is not a display
+   * problem — it is a parcel sent to the wrong country.
+   */
+  countrySlug,
   returningDate: dateField.optional().nullable(),
   comment: z.string().trim().max(2000).optional().nullable(),
 });
@@ -104,6 +114,11 @@ export const clearanceOrderSchema = z.object({
   contact: contactSchema,
   applicants: applicantsField,
   countryId: optionalId,
+  /**
+   * The country whose employer or embassy asked for the certificate, as the
+   * website names it. Decides `countryId`.
+   */
+  countrySlug,
   departureDate: dateField.optional().nullable(),
   courierOptionId: optionalId,
   returnAddress: returnAddressSchema.optional(),
@@ -163,6 +178,8 @@ export const voucherOrderSchema = z.object({
       state: z.string().trim().max(255).optional().nullable(),
       postcode: z.string().trim().max(255).optional().nullable(),
       countryId: optionalId,
+      /** The employer's country as the website names it. Decides `countryId`. */
+      countrySlug,
     })
     .optional(),
   comment: z.string().trim().max(2000).optional().nullable(),
@@ -184,6 +201,17 @@ export const legalisationOrderSchema = z.object({
   contact: contactSchema,
   destinationCountryId: optionalId,
   nationalityCountryId: optionalId,
+  /**
+   * The destination and the document's country of origin, as the website names
+   * them. Each decides the id beside it.
+   *
+   * Both matter on a legalisation order and for different reasons: the
+   * destination is which authority the documents are legalised for, and the
+   * origin is which country issued them, which is what decides whether an
+   * apostille is even available.
+   */
+  destinationCountrySlug: countrySlug,
+  nationalityCountrySlug: countrySlug,
   documents: z
     .array(
       z.object({

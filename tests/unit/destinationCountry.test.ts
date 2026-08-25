@@ -31,6 +31,7 @@ jest.mock('../../src/shared/logger', () => ({
 
 import {
   destinationCountryId,
+  resetCountryCache,
   resolveCountrySlug,
 } from '../../src/domain/countries';
 
@@ -49,6 +50,8 @@ const REAL_LIST = [
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // The row cache is process-wide, so each test starts from a cold read.
+  resetCountryCache();
   findAll.mockResolvedValue(REAL_LIST);
 });
 
@@ -163,5 +166,67 @@ describe('destinationCountryId', () => {
     expect(findAll).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.anything() })
     );
+  });
+});
+
+/**
+ * The same fault, on the fields the visa journey does not have.
+ *
+ * A destination was the reported symptom, but it was never the only country an
+ * order carries. Attestation names a destination *and* the document's country of
+ * origin; a clearance names the country that asked for the certificate; a voucher
+ * names the traveller's nationality and the employer's country; and most
+ * journeys can name a return address, which is where CLS posts the documents
+ * back to. Each one used to be an integer resolved on the website's side.
+ */
+describe('the other country fields an order carries', () => {
+  const resolveAll = (fields: Record<string, { slug: string; id: number }>) =>
+    Promise.all(
+      Object.entries(fields).map(async ([name, field]) => [
+        name,
+        await destinationCountryId({ ...field, journey: name }),
+      ])
+    );
+
+  it('resolves every field from its own slug, not from the id beside it', async () => {
+    // Every id here is the wrong one — the shape of the reported bug, applied to
+    // each field in turn. Each must come back as the row its slug names.
+    const resolved = await resolveAll({
+      'Legalisation destination': { slug: 'saudi-arabia', id: 2 },
+      'Legalisation origin': { slug: 'canada', id: 185 },
+      'Return address': { slug: 'canada', id: 185 },
+      'Applicant nationality': { slug: 'saudi-arabia', id: 2 },
+    });
+
+    expect(Object.fromEntries(resolved)).toEqual({
+      'Legalisation destination': 185,
+      'Legalisation origin': 2,
+      'Return address': 2,
+      'Applicant nationality': 185,
+    });
+  });
+
+  it('names the field in the log, so a drift can be traced to one', async () => {
+    await destinationCountryId({
+      slug: 'saudi-arabia',
+      id: 2,
+      journey: 'Legalisation order return address',
+    });
+
+    expect(logError).toHaveBeenCalledWith(
+      expect.stringContaining('Legalisation order return address')
+    );
+  });
+
+  it('reads the country table once for an order that names several', async () => {
+    // Six country fields on one lodgement must not be six scans of the same
+    // 237 rows. See the cache note in domain/countries.
+    await resolveAll({
+      a: { slug: 'canada', id: 2 },
+      b: { slug: 'saudi-arabia', id: 185 },
+      c: { slug: 'canada', id: 2 },
+    });
+
+    expect(findAll).toHaveBeenCalledTimes(1);
   });
 });
