@@ -347,7 +347,7 @@ export const components = {
     Comment: {
       type: 'object',
       description:
-        'One message on an order, from either of the two tables that hold one. The same shape whichever it came from and whoever wrote it — `authorRole` is what tells the sides apart, and a note marked internal is never returned at all.\n\n`tbl_order_destination_notes` is the consultant thread: CLS’s admin draws its “Client comment” box inside the destination block and files what a consultant types against the destination row, so this is where the correspondence on an order actually lives. Those ids carry a `dn-` prefix, because both tables auto-increment from 1 and a merged thread needs them distinct.\n\n`tbl_order_notes` holds the rest: the summary the order form files at submission, and the thread on an order with no destination row at all — clearance, voucher and document delivery, whose legacy controllers write none. Those ids are bare.',
+        'One message on an order, from either of the two tables that hold one. The same shape whichever it came from and whoever wrote it — `authorRole` is what tells the sides apart.\n\n`tbl_order_destination_notes` is the consultant thread: CLS’s admin draws its “Client comment” box inside the destination block and files what a consultant types against the destination row, so this is where the correspondence on an order actually lives. Those ids carry a `dn-` prefix, because both tables auto-increment from 1 and a merged thread needs them distinct. Both of that table’s lanes come back — the message written to the client and the staff working note beside it — with `internal` marking the second rather than it being withheld. CLS asked for that on 2026-08-26, because staff file most of their notes in the box labelled “Admin comment” and those were reaching nobody.\n\n`tbl_order_notes` holds the rest: the summary the order form files at submission, and the thread on an order with no destination row at all — clearance, voucher and document delivery, whose legacy controllers write none. Those ids are bare, and its own internal rows are *not* returned: they are the chargeable “Notary / DFAT / $85” fee lines, which this API reports as charges rather than as messages.',
       properties: {
         id: { type: 'string' },
         reference: { type: 'string' },
@@ -360,6 +360,12 @@ export const components = {
           enum: [true],
           description:
             'Present only when a consultant triaged the note as waiting on the client. Read from `tbl_order_notes.status`; a destination note never carries it, because that table has no `status` column.',
+        },
+        internal: {
+          type: 'boolean',
+          enum: [true],
+          description:
+            'Present only on a CLS working note — `tbl_order_destination_notes.is_admin = 1`, the box the admin labels “Admin comment”. Shown to the client, but badged rather than presented as a message addressed to them: these are written in staff shorthand ("closed order .") and read as nonsense without that context. Absent on the client-facing lane and on every `tbl_order_notes` row.',
         },
         attachments: {
           type: 'array',

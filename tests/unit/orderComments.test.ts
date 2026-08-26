@@ -14,9 +14,14 @@
  * written there reached no CLS screen at all.
  *
  * `is_admin` is the flag that matters on both tables and it means the *same*
- * thing on each, despite the admin's labels: 0 is the shared client-facing
- * thread, 1 is staff-only. A client's own note written as 1 would be hidden from
- * them and filed among CLS's private notes.
+ * thing on each, despite the admin's labels: 0 is the box CLS writes *to* the
+ * client from, 1 is the staff working note beside it. A client's own reply is
+ * written as 0 — it is addressed to CLS, so filing it as a staff note would put
+ * a client's words in the lane the portal badges as CLS's own.
+ *
+ * On the read, both lanes now come back and the flag is a label rather than a
+ * filter. That changed on 2026-08-26 at CLS's request, and the reason is in
+ * `listDestinationNotes`; the write is unaffected either way.
  *
  * The model layer is mocked rather than exercised: every assertion here is about
  * the row handed to `create`, which is decided before any query runs.
@@ -57,7 +62,8 @@ jest.mock('../../src/models', () => ({
 
 import { Op } from 'sequelize';
 import { addClientComment } from '../../src/modules/orders/orders.writes';
-import { listClientVisibleDestinationNotes } from '../../src/modules/orders/orders.repository';
+import { listDestinationNotes } from '../../src/modules/orders/orders.repository';
+import { toDestinationCommentView } from '../../src/modules/orders/orders.presenter';
 import type { ResolvedOrder } from '../../src/modules/orders/orders.service';
 
 const clsOrder = (orderNo: string | null = 'CLS-000451'): ResolvedOrder =>
@@ -275,38 +281,83 @@ describe('addClientComment — the fallback', () => {
   });
 });
 
-describe('listClientVisibleDestinationNotes', () => {
+describe('listDestinationNotes', () => {
   /**
-   * The filter that keeps CLS's internal notes inside CLS.
+   * The whole thread, both lanes — and the flag carried through rather than
+   * filtered on.
    *
-   * Asserted rather than commented, because the column name argues for the
-   * opposite reading every time somebody new looks at it. `is_admin = 1` is the
-   * “Admin comment” box — staff talking to staff about a client's order — and it
-   * must never be returned to that client. Getting this backwards would publish
-   * CLS's private notes to the people they are about.
+   * This asserted the opposite until 2026-08-26: `is_admin = 1` was withheld as
+   * CLS's private working notes. CLS asked for it to be shown instead, because
+   * the admin's labels send staff to the wrong box — "Admin comment" is the one
+   * that *sounds* like the box an admin types in — and every note filed there
+   * reached nobody. Order 10034012's entire history sat in that lane while the
+   * client's portal said "No messages yet".
+   *
+   * What replaces the filter is the label: `toDestinationCommentView` sets
+   * `internal` from the same column and the portal badges it. The two are a pair,
+   * so the presenter's assertion below is the other half of this one.
    */
-  it('asks only for notes on the client-facing side of the thread', async () => {
+  it('asks for every note on the thread, both lanes', async () => {
     destinationNoteFindAll.mockResolvedValue([]);
 
-    await listClientVisibleDestinationNotes([77, 78]);
+    await listDestinationNotes([77, 78]);
 
     const [query] = destinationNoteFindAll.mock.calls[0];
 
-    // Null counts as client-facing: the column defaults to 0 and MyISAM rows
-    // written before it existed have no value, so an old note is shown rather
-    // than silently withheld.
-    expect(query.where[Op.or]).toEqual([
-      { is_admin: { [Op.is]: null } },
-      { is_admin: 0 },
-    ]);
     expect(query.where.destination_id).toEqual({ [Op.in]: [77, 78] });
+    // No `is_admin` condition at all, in any form. Asserted on the whole clause
+    // rather than on the absence of one key, so a filter reintroduced as an
+    // `Op.or`, an `Op.and` or a bare equality all fail this.
+    expect(Object.getOwnPropertySymbols(query.where)).toEqual([]);
+    expect(Object.keys(query.where)).toEqual(['destination_id']);
   });
 
   it('does not query at all for an order with no destinations', async () => {
-    await expect(listClientVisibleDestinationNotes([])).resolves.toEqual([]);
+    await expect(listDestinationNotes([])).resolves.toEqual([]);
 
     // `IN ()` is a syntax error, and there is nothing to ask for anyway.
     expect(destinationNoteFindAll).not.toHaveBeenCalled();
+  });
+});
+
+describe('toDestinationCommentView — which lane a note came from', () => {
+  const note = (is_admin: number | null) =>
+    ({
+      id: 23596,
+      destination_id: 26358,
+      note: 'Signed CLS order form.',
+      date_added: '2026-06-19 15:30:10',
+      note_by_name: 'Sapna',
+      user_type: 'Admin',
+      is_admin,
+      attachment: 'CLS Order Form Australia (005).pdf',
+    }) as unknown as Parameters<typeof toDestinationCommentView>[0];
+
+  it('marks a note from the “Admin comment” box as internal', () => {
+    // The lane the portal badges "CLS team note". Without it a client reads
+    // "closed order ." as a message somebody wrote to them.
+    expect(toDestinationCommentView(note(1), 'CLS-10034012')).toMatchObject({
+      internal: true,
+      authorRole: 'Consultant',
+    });
+  });
+
+  it('leaves the flag off the client-facing lane', () => {
+    for (const value of [0, null]) {
+      // Null is the MyISAM default on rows written before the column existed.
+      // Those are ordinary messages, not staff notes.
+      expect(toDestinationCommentView(note(value), 'CLS-1')).not.toHaveProperty(
+        'internal'
+      );
+    }
+  });
+
+  it('offers an internal note’s attachment like any other', () => {
+    // The lane decides the badge, not whether the file is reachable — the
+    // download route dropped the same check for the same reason.
+    expect(toDestinationCommentView(note(1), 'CLS-1').attachments).toEqual([
+      { id: 'dn-23596', name: 'CLS Order Form Australia (005).pdf' },
+    ]);
   });
 });
 

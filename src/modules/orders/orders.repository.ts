@@ -600,36 +600,46 @@ export const listLegacyDestinationIds = async (orderNo: number): Promise<number[
   ).map((row) => row.id);
 
 /**
- * The consultant thread on an order, as the client may read it.
+ * The consultant thread on an order — every note on it, both lanes.
  *
- * **`is_admin` means the opposite of what the admin's labels suggest, and this
- * filter is the whole reason to read the Acme controller rather than the
- * screenshot.** The box labelled "Client comment" writes `is_admin = 0` — it is
- * the message *to the client*, and `ViewOrderController` emails it to them with
- * "A CLS team member has updated your order with the following message". The box
- * labelled "Admin comment" writes `is_admin = 1` and is internal: staff talking
- * to staff, never sent anywhere, and on the generic order view the same field is
- * honestly labelled "Your comment" against the client-facing one.
+ * ## The two lanes, and why both are returned
  *
- * So `is_admin = 0` is the shared thread and `is_admin = 1` must never leave
- * CLS. Getting this backwards would publish CLS's internal notes on an order to
- * the client whose order it is, which is the single worst thing this API could
- * do — the same reason `listClientVisibleNotes` filters the same way.
+ * `is_admin` means the opposite of what the admin's labels suggest, which is the
+ * whole reason to read the Acme controller rather than the screenshot. The box
+ * labelled "Client comment" writes `is_admin = 0` — the message *to* the client,
+ * which `ViewOrderController` also emails them. The box labelled "Admin comment"
+ * writes `is_admin = 1`: CLS's own working notes on the order.
+ *
+ * This used to return the first lane only, on the reasoning that a note written
+ * for staff should not reach the client it is about. **CLS reversed that on
+ * 2026-08-26 and asked for both.** The reason is the labels: staff reach for
+ * "Admin comment" by its name — it is the box that *sounds* like the one an
+ * admin types in — and everything they file there reaches nobody. Order 10034012
+ * is the whole thread of a finished legalisation ("Signed CLS order form.",
+ * "Notary done by Ashilpa Khanna.", "closed order .", two PDFs) sitting in that
+ * lane while the client's portal said "No messages yet".
+ *
+ * So the lane is no longer a filter; it is a **label**. `toDestinationCommentView`
+ * carries `is_admin = 1` through as `internal: true` and the portal badges it
+ * "CLS team note", so a client can tell a working note from a message addressed
+ * to them without either being hidden.
+ *
+ * `tbl_order_notes` is a different matter and keeps its filter — see
+ * `listClientVisibleNotes`. Its `is_admin = 1` rows are the chargeable "Notary /
+ * DFAT / $85" lines the admin renders as a fee table, not correspondence, and
+ * the portal shows those as charges rather than as messages.
  *
  * `is_deleted` has no counterpart here: this table has no such column, so a note
  * the admin "deletes" is genuinely gone (`deleteDestCommentAction` issues a
  * `DELETE`) and there is nothing to honour.
  */
-export const listClientVisibleDestinationNotes = (
+export const listDestinationNotes = (
   destinationIds: readonly number[]
 ): Promise<OrderDestinationNotes[]> =>
   destinationIds.length === 0
     ? Promise.resolve([])
     : OrderDestinationNotes.findAll({
-        where: {
-          destination_id: { [Op.in]: [...destinationIds] },
-          [Op.or]: [{ is_admin: { [Op.is]: null } }, { is_admin: 0 }],
-        },
+        where: { destination_id: { [Op.in]: [...destinationIds] } },
         order: [['date_added', 'DESC']],
         limit: 200,
       });

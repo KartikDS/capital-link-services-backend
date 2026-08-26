@@ -442,6 +442,15 @@ export const toCommentView = (note: OrderNotes, reference: string) => ({
  * and this table has no `status` column at all — so a destination note carries no
  * triage state, rather than one being invented for it.
  *
+ * **`internal` is set from `is_admin`, and is the reason both lanes can be
+ * returned at all.** `is_admin = 1` is the "Admin comment" box — CLS's own
+ * working notes on the order, written in shorthand and addressed to nobody
+ * ("Notary done by Ashilpa Khanna.", "closed order ."). Since 2026-08-26 the
+ * portal shows them, so the client needs to be able to tell one from a message
+ * written *to* them; this flag is what the badge reads. Absent rather than
+ * `false` on the client-facing lane, the same way `actionRequired` is, so a note
+ * only carries it when it means something.
+ *
  * `attachment` holds a bare filename, which is all the admin's file input records
  * (`setAttachment(basename)`, with the bytes moved to
  * `web/dev/destination_notes_file/`). One file per row is the whole model: the
@@ -466,6 +475,10 @@ export const toDestinationCommentView = (
   authorRole: clean(note.user_type)?.toLowerCase() === 'client' ? 'Client' : 'Consultant',
   postedAt: toIso(note.date_added),
   body: clean(note.note) ?? '',
+  // A staff working note rather than a message to the client. Compared against 1
+  // rather than tested for truthiness: null is the MyISAM default on rows written
+  // before the column existed, and those belong on the client-facing side.
+  ...(note.is_admin === 1 ? { internal: true as const } : {}),
   // Only present when there is one, so a message without a file carries no empty
   // array for the website to test.
   ...(clean(note.attachment)

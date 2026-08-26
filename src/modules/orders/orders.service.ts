@@ -291,6 +291,14 @@ export const destinationIds = (resolved: ResolvedOrder): Promise<number[]> =>
  * `orders.lodge` files at submission — and it is the only place an order with no
  * destination row (clearance, voucher, document delivery) can have a thread.
  *
+ * ## Which notes come back
+ *
+ * From the consultant thread, all of them — both `is_admin` lanes, marked rather
+ * than filtered, since CLS asked for that on 2026-08-26. `listDestinationNotes`
+ * has the reasoning and `toDestinationCommentView` sets the `internal` flag the
+ * portal badges. From `tbl_order_notes`, still only the client-facing ones: its
+ * `is_admin = 1` rows are the fee lines, not correspondence.
+ *
  * ## Ordering
  *
  * Newest first, matching what each table returned on its own, so the website's
@@ -305,7 +313,7 @@ export const comments = async (resolved: ResolvedOrder) => {
 
   const [orderNotes, destinationNotes] = await Promise.all([
     key === null ? Promise.resolve([]) : repository.listClientVisibleNotes(key),
-    destinationIds(resolved).then(repository.listClientVisibleDestinationNotes),
+    destinationIds(resolved).then(repository.listDestinationNotes),
   ]);
 
   return [
@@ -338,8 +346,17 @@ export const commentAttachment = async (
   const note = await repository.findDestinationNote(Number.parseInt(numeric, 10));
   if (!note) throw missing;
 
-  // An internal note's attachment is as internal as its text.
-  if (note.is_admin !== null && note.is_admin !== 0) throw missing;
+  /**
+   * Both lanes, because the thread now shows both.
+   *
+   * This used to refuse a note with `is_admin = 1` on the reasoning that an
+   * internal note's attachment is as internal as its text. That reasoning still
+   * holds — it is just that CLS decided on 2026-08-26 the text is not internal
+   * either, so refusing here would have offered the client a file the thread had
+   * already listed and then 404'd on the click. See `listDestinationNotes`.
+   *
+   * The ownership check below is untouched, and it is the one that matters.
+   */
 
   const ids = await destinationIds(resolved);
   if (note.destination_id === null || !ids.includes(note.destination_id)) {
@@ -432,7 +449,7 @@ export const timeline = async (
 
   const [notes, destinationNotes, payments] = await Promise.all([
     key === null ? Promise.resolve([]) : repository.listClientVisibleNotes(key),
-    destinationIds(resolved).then(repository.listClientVisibleDestinationNotes),
+    destinationIds(resolved).then(repository.listDestinationNotes),
     key === null ? Promise.resolve([]) : repository.listPayments(key),
   ]);
 
