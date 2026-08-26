@@ -200,10 +200,71 @@ export interface OrderListFilter {
 
 const listOrder: SequelizeOrder = [['date_submitted', 'DESC']];
 
+/**
+ * The columns a list row is built from, rather than every column there is.
+ *
+ * ## Why the lists project and the detail reads do not
+ *
+ * A client's whole order history has to come back in one request for the portal
+ * table's counts, filters and search to mean anything — they run in the browser
+ * over the rows it holds. That read is the one that has to be cheap, and the
+ * cheapest thing available was to stop selecting columns nobody renders:
+ * `tbl_orders` is 145 columns wide and `toLegacyOrderView` reads fourteen of
+ * them, `tbl_cls_order` is 37 and `toOrderView` reads ten. Reading a walk-in
+ * account's four hundred orders was timing out; most of what it carried was
+ * never looked at.
+ *
+ * `visa_cls_team_member` is here for `listForClient`, which batches the
+ * consultant lookup off it, and the primary key is here because `findAndCountAll`
+ * counts on it and the `separate: true` includes join on it.
+ *
+ * **A narrowed column does not throw when read — it is `undefined`.** So these
+ * lists are pinned by `tests/unit/orderListProjection.test.ts`, which drives the
+ * presenters against a recording proxy and fails if either reads a column that
+ * is not selected here. Add a field to a presenter and that test tells you to
+ * add it here; it is the only thing standing between a narrowed select and a
+ * column silently rendering blank for every order on the screen.
+ */
+export const CLS_LIST_ATTRIBUTES = [
+  'id',
+  'contact_first_name',
+  'contact_last_name',
+  'date_last_saved',
+  'date_submitted',
+  'departure_date',
+  'order_type',
+  'payment_status',
+  'status',
+  'total_fee',
+  'visa_cls_team_member',
+] as const;
+
+export const LEGACY_LIST_ATTRIBUTES = [
+  // `order_no` *is* this table's primary key -- an auto_increment int. There is
+  // no `id` column, and selecting one fails the whole query with
+  // "Unknown column 'Orders.id'".
+  'order_no',
+  'order_type',
+  'status',
+  'grand_total',
+  'date_last_saved',
+  'date_submitted',
+  'departure_date',
+  'primary_traveller_name',
+  'pri_dept_contact_fname',
+  'pri_dept_contact_lname',
+  'police_clearance_date_cls_received_all_items',
+  'police_clearance_date_submitted_for_processing',
+  'police_clearance_date_completed_and_received_at_cls',
+  'police_clearance_date_order_on_route_and_closed',
+  'visa_cls_team_member',
+] as const;
+
 export const listClsOrders = (
   filter: OrderListFilter
 ): Promise<{ rows: ClsOrder[]; count: number }> =>
   ClsOrder.findAndCountAll({
+    attributes: [...CLS_LIST_ATTRIBUTES],
     where: {
       client_id: filter.clientId,
       ...CLS_SUBMITTED,
@@ -213,10 +274,25 @@ export const listClsOrders = (
     },
     include: [
       { model: Countries, as: 'destinationCountry', required: false },
-      { model: ClsOrderDocuments, as: 'documents', required: false },
+      /**
+       * `separate: true` on both, for the reason given on `clsMilestoneIncludes`.
+       *
+       * These two were plain joins while the four milestone includes were
+       * separate, which is the worst of both: an order with three documents and
+       * two travellers came back as six identical copies of itself, and the
+       * whole page's rows multiplied before Sequelize deduped them in memory.
+       * Two extra round trips is the cheaper half of that trade by a wide
+       * margin, and it is what lets a client's full history be read at once.
+       */
+      { model: ClsOrderDocuments, as: 'documents', required: false, separate: true },
       // Needed for the "2 applicants · Dubai" line the portal cards render.
       // Without it the count is zero and the line loses its first half.
-      { model: OrderTravellerDetails, as: 'travellers', required: false },
+      {
+        model: OrderTravellerDetails,
+        as: 'travellers',
+        required: false,
+        separate: true,
+      },
       // The progress bar and stage on each card are counted from the milestone
       // dates, so a list that does not load them shows every order at zero.
       ...clsMilestoneIncludes,
@@ -300,6 +376,8 @@ export const listLegacyOrders = (
   filter: OrderListFilter
 ): Promise<{ rows: Orders[]; count: number }> =>
   Orders.findAndCountAll({
+    // Sixteen of this table's 145 columns — see `LEGACY_LIST_ATTRIBUTES`.
+    attributes: [...LEGACY_LIST_ATTRIBUTES],
     where: {
       client_id: filter.clientId,
       ...LEGACY_SUBMITTED,
