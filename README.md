@@ -286,6 +286,55 @@ against them and its own tests assert on those paths.
    becomes a 503 with the statement in the log instead of a modified legacy row.
 6. **Set `LEGACY_UPLOAD_DIR`** if legacy document downloads are needed. Unset, a
    legacy file answers 404 rather than reading from a guessed path.
+7. **Set the S3 variables.** `GET /api/system/ready` reports
+   `documentStorage: "local"` until all four of `S3_BUCKET`, `S3_REGION`,
+   `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` are present, and `local` on a
+   replaceable container means a client's passport scan goes when the container
+   does.
 
-`/uploads` is never served statically. These are passport scans; every download
-goes through an endpoint that checks ownership first.
+## Where documents live
+
+Client documents — order attachments and passport photos — are written **twice**:
+to the S3 bucket and under `UPLOAD_DIR`. `GET /api/system/ready` reports
+`documentStorage: "s3+local"` when both are in play and `"local"` when no bucket
+is configured.
+
+**The database value is the same either way**: `tbl_cls_order_documents.document`
+holds a path relative to the upload root, and the bucket key is that path with
+`S3_PREFIX` in front. Nothing in a row says which places hold the file, so every
+read checks all of them — the bucket, `UPLOAD_DIR`, then `LEGACY_UPLOAD_DIR` —
+and this is what lets the bucket be switched on without stranding anything
+uploaded before it.
+
+### Two copies, one document
+
+A document found in more than one place is still **one** document, and is listed
+and served once. `locateDocument` de-duplicates by stored path and returns the
+places in the order a read prefers them, so:
+
+- a download streams the preferred copy only — the bucket's, because a bucket
+  object is either complete or absent, where a local file can be a truncated
+  write;
+- a discarded upload has *every* copy removed, since removing one would leave the
+  read path serving the other;
+- `LEGACY_UPLOAD_DIR` pointed at `UPLOAD_DIR` counts as one copy, not two.
+
+Either sink failing is not the upload failing. A bucket outage must not throw away
+a scan already on disk, and a read-only filesystem must not break every upload on
+a deployment whose bucket is fine — so a write succeeds if either place took the
+bytes, and a single-copy write is logged at `error` because nothing else would
+report it.
+
+| Variable | Effect |
+| --- | --- |
+| `S3_BUCKET` | The bucket. All four of these are needed before anything is written to it. |
+| `S3_REGION` | |
+| `S3_ACCESS_KEY_ID` | |
+| `S3_SECRET_ACCESS_KEY` | |
+| `S3_ENDPOINT` | For an S3-compatible provider. Empty means AWS's own endpoint for the region. |
+| `S3_FORCE_PATH_STYLE` | `bucket/key` in the path rather than `bucket.` in the host. Most non-AWS providers need `true`. |
+| `S3_PREFIX` | Optional key prefix. Set it once — changing it does not move the objects already written. |
+
+Neither `/uploads` nor the bucket is ever served statically, and the bucket holds
+no public objects. These are passport scans; every download goes through an
+endpoint that checks ownership first and streams the bytes through this service.

@@ -1,10 +1,13 @@
 import { Op, type Order as SequelizeOrder, type WhereOptions } from 'sequelize';
 import {
   ClsOrder,
+  ClsOrderDestinations,
   ClsOrderDocumentNotes,
   ClsOrderDocuments,
   Countries,
   DocumentLegalizationOrderDetails,
+  OrderDestinationNotes,
+  OrderDestinations,
   OrderDlChecklist,
   OrderDlQuotes,
   OrderNotes,
@@ -50,17 +53,57 @@ import { LEGACY_SUBMITTED_FROM } from '../../domain/codes';
  */
 const CLS_SUBMITTED: WhereOptions = { date_submitted: { [Op.ne]: null } };
 
-/** Everything an order detail screen needs, in one query. */
+/**
+ * Everything an order detail screen needs, in one query.
+ *
+ * The three `*_order_details` tables **and** the destination rows, because the
+ * four milestone dates are on one or the other depending on the service — a
+ * public visa or a document legalisation keeps them on its destination row. See
+ * `domain/milestones`. Leaving the destinations out is what made a legalisation
+ * order's timeline read as four blank steps while CLS's admin showed it moving.
+ */
 const clsDetailIncludes = [
   { model: Countries, as: 'destinationCountry', required: false },
   { model: OrderTravellerDetails, as: 'travellers', required: false },
   { model: ClsOrderDocuments, as: 'documents', required: false },
+  { model: ClsOrderDestinations, as: 'destinations', required: false },
   { model: PoliceClearanceOrderDetails, as: 'policeClearanceDetails', required: false },
   { model: RussianVisaVoucherOrderDetails, as: 'voucherDetails', required: false },
   {
     model: DocumentLegalizationOrderDetails,
     as: 'legalisationDetails',
     required: false,
+  },
+];
+
+/**
+ * The milestone sources, for the list queries.
+ *
+ * `separate: true` on every one: a list already joins documents and travellers,
+ * and four more `hasMany` joins would multiply the result set — three documents
+ * times two travellers times two destinations is twelve rows per order before
+ * Sequelize dedupes them. Separate queries keep the row count flat and keep the
+ * `count` honest, at four extra round trips per page of orders.
+ */
+const clsMilestoneIncludes = [
+  { model: ClsOrderDestinations, as: 'destinations', required: false, separate: true },
+  {
+    model: PoliceClearanceOrderDetails,
+    as: 'policeClearanceDetails',
+    required: false,
+    separate: true,
+  },
+  {
+    model: RussianVisaVoucherOrderDetails,
+    as: 'voucherDetails',
+    required: false,
+    separate: true,
+  },
+  {
+    model: DocumentLegalizationOrderDetails,
+    as: 'legalisationDetails',
+    required: false,
+    separate: true,
   },
 ];
 
@@ -174,6 +217,9 @@ export const listClsOrders = (
       // Needed for the "2 applicants · Dubai" line the portal cards render.
       // Without it the count is zero and the line loses its first half.
       { model: OrderTravellerDetails, as: 'travellers', required: false },
+      // The progress bar and stage on each card are counted from the milestone
+      // dates, so a list that does not load them shows every order at zero.
+      ...clsMilestoneIncludes,
     ],
     order: listOrder,
     limit: filter.limit,
@@ -224,6 +270,9 @@ const legacyDetailIncludes = [
   { model: Countries, as: 'destinationCountry', required: false },
   { model: OrderTravellers, as: 'travellers', required: false },
   { model: OrderNotes, as: 'notes', required: false },
+  // `tbl_orders` keeps only the police clearance milestone dates on the order
+  // row; every other service's are on its destinations.
+  { model: OrderDestinations, as: 'destinations', required: false },
 ];
 
 /**
@@ -256,7 +305,10 @@ export const listLegacyOrders = (
       ...LEGACY_SUBMITTED,
       ...(filter.orderType ? { order_type: filter.orderType } : {}),
     },
-    include: [{ model: Countries, as: 'destinationCountry', required: false }],
+    include: [
+      { model: Countries, as: 'destinationCountry', required: false },
+      { model: OrderDestinations, as: 'destinations', required: false, separate: true },
+    ],
     order: [['date_submitted', 'DESC']],
     limit: filter.limit,
     offset: filter.offset,
@@ -295,6 +347,93 @@ export const listAllNotes = (orderNo: number): Promise<OrderNotes[]> =>
     order: [['date_added', 'DESC']],
     limit: 500,
   });
+
+// ---------------------------------------------------------------------------
+// The consultant thread — `tbl_order_destination_notes`
+// ---------------------------------------------------------------------------
+
+/**
+ * The destination rows an order has, which is what its consultant thread hangs
+ * off.
+ *
+ * ## Why the thread is not keyed on the order
+ *
+ * Because CLS's admin does not key it on the order. Every order-view screen in
+ * `CLSadminBundle` draws its "Client comment" and "Admin comment" boxes inside a
+ * destination block and posts them as `ticketComment[<destination id>]` — so
+ * `ViewOrderController` writes `OrderDestinationNotes` with
+ * `setDestinationId($destinations[$i]['id'])`, never the order number. A thread
+ * read by order id would find nothing a consultant has ever written.
+ *
+ * One function per family, as everything else in this module: a `tbl_cls_order`
+ * has its destinations in `tbl_cls_order_destinations` keyed on `order_id`, and a
+ * `tbl_orders` has them in `tbl_order_destinations` keyed on `order_no`.
+ *
+ * ## Why a list and not one id
+ *
+ * A visa order can have several destinations, each with its own thread, and the
+ * admin renders one comment box per destination. The client has one conversation
+ * about their order, so the portal reads all of them — and an order with no
+ * destination row at all (clearance, voucher, document delivery: their legacy
+ * controllers write none) correctly has no destination thread rather than an
+ * error.
+ */
+export const listClsDestinationIds = async (orderId: number): Promise<number[]> =>
+  (
+    await ClsOrderDestinations.findAll({
+      attributes: ['id'],
+      where: { order_id: orderId },
+      order: [['id', 'ASC']],
+    })
+  ).map((row) => row.id);
+
+export const listLegacyDestinationIds = async (orderNo: number): Promise<number[]> =>
+  (
+    await OrderDestinations.findAll({
+      attributes: ['id'],
+      where: { order_no: orderNo },
+      order: [['id', 'ASC']],
+    })
+  ).map((row) => row.id);
+
+/**
+ * The consultant thread on an order, as the client may read it.
+ *
+ * **`is_admin` means the opposite of what the admin's labels suggest, and this
+ * filter is the whole reason to read the Acme controller rather than the
+ * screenshot.** The box labelled "Client comment" writes `is_admin = 0` — it is
+ * the message *to the client*, and `ViewOrderController` emails it to them with
+ * "A CLS team member has updated your order with the following message". The box
+ * labelled "Admin comment" writes `is_admin = 1` and is internal: staff talking
+ * to staff, never sent anywhere, and on the generic order view the same field is
+ * honestly labelled "Your comment" against the client-facing one.
+ *
+ * So `is_admin = 0` is the shared thread and `is_admin = 1` must never leave
+ * CLS. Getting this backwards would publish CLS's internal notes on an order to
+ * the client whose order it is, which is the single worst thing this API could
+ * do — the same reason `listClientVisibleNotes` filters the same way.
+ *
+ * `is_deleted` has no counterpart here: this table has no such column, so a note
+ * the admin "deletes" is genuinely gone (`deleteDestCommentAction` issues a
+ * `DELETE`) and there is nothing to honour.
+ */
+export const listClientVisibleDestinationNotes = (
+  destinationIds: readonly number[]
+): Promise<OrderDestinationNotes[]> =>
+  destinationIds.length === 0
+    ? Promise.resolve([])
+    : OrderDestinationNotes.findAll({
+        where: {
+          destination_id: { [Op.in]: [...destinationIds] },
+          [Op.or]: [{ is_admin: { [Op.is]: null } }, { is_admin: 0 }],
+        },
+        order: [['date_added', 'DESC']],
+        limit: 200,
+      });
+
+/** One note from the thread, by id. Ownership is checked by the caller. */
+export const findDestinationNote = (id: number): Promise<OrderDestinationNotes | null> =>
+  OrderDestinationNotes.findByPk(id);
 
 export const listClsDocuments = (orderId: number): Promise<ClsOrderDocuments[]> =>
   ClsOrderDocuments.findAll({

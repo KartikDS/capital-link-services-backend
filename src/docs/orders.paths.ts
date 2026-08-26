@@ -681,7 +681,7 @@ export const orderPaths = {
       tag,
       summary: 'What has happened to an order',
       description:
-        'Built from the milestone dates on the order’s detail table. There is no event log in this schema, so the timeline is what those four dates imply rather than a record of every change.',
+        'Built from the milestone dates the order carries — on its service detail table, or on its destination rows for a public visa or a document legalisation, which is where CLS’s admin stamps those. There is no event log in this schema, so the timeline is what those four dates imply rather than a record of every change.',
       auth: 'bearer',
       responses: {
         200: okObject('The timeline', {
@@ -704,25 +704,12 @@ export const orderPaths = {
   '/api/orders/{reference}/comments': {
     get: operation('/api/orders/{reference}/comments', {
       tag,
-      summary: 'The client-visible notes on an order',
+      summary: 'The conversation on an order',
       description:
-        'Filtered on `is_admin`, so a note a consultant marked internal is not returned here. That flag is the whole difference between a note a client sees and one they do not.',
+        'Both note tables, merged into one thread, newest first — see the `Comment` schema for which is which and why the ids differ. A consultant’s messages are in `tbl_order_destination_notes`, so a read of `tbl_order_notes` alone returned an order’s form summary and none of its correspondence.' + NL + NL + 'Filtered on `is_admin` in both, and that flag decides whether a client may see a row at all. **On the destination table it means the opposite of what CLS’s admin labels suggest:** the box labelled “Client comment” writes 0 and is the message *to* the client — `ViewOrderController` emails it to them on save — while “Admin comment” writes 1 and is staff talking to staff. Only 0 is returned here.',
       auth: 'bearer',
       responses: {
-        200: okObject('Comments', {
-          comments: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                id: { type: 'integer' },
-                body: { type: 'string' },
-                author: { type: 'string', nullable: true },
-                createdAt: { type: 'string', format: 'date-time', nullable: true },
-              },
-            },
-          },
-        }),
+        200: okList('Comments', 'comments', 'Comment'),
       },
     }),
 
@@ -730,7 +717,7 @@ export const orderPaths = {
       tag,
       summary: 'Add your own note to an order',
       description:
-        'Writes into the same `tbl_order_notes` log a consultant reads, with `is_admin` 0 and `user_type` `client` — so the note is visible to the client who wrote it and answered in place.' + NL + NL + '**Not a message thread.** The table is a flat log with no read state, no reply-to and no delivery receipt, so none of those are reported. `status` is left unset on purpose: that is the admin’s triage column, and a client cannot decide their own order is action-required.' + NL + NL + 'Refused for an order whose reference carries no digits: `order_no` on the notes table is an `int`, so there would be no key to file the note under and it would be written where nobody could find it.',
+        'Writes into `tbl_order_destination_notes` against the order’s destination row, with `is_admin` 0 and `user_type` `Client` — which is the thread CLS’s admin draws its “Client comment” list from, so the note appears against the order on the consultant’s own screen. The capitalisation of `user_type` is deliberate: the admin’s template prints it verbatim in the byline and gates its edit and delete controls on `Admin`, so a client’s words render as theirs and stay uneditable.' + NL + NL + 'An order with no destination row — clearance, voucher, document delivery — falls back to `tbl_order_notes`, keyed on the digits of the reference. Refused when the reference carries none: `order_no` there is an `int`, so there would be no key to file the note under and it would be written where nobody could find it.' + NL + NL + '**Not a message thread.** Neither table has read state, reply-to or a delivery receipt, so none of those are reported. `status` is left unset on the fallback path on purpose: that is the admin’s triage column, and a client cannot decide their own order is action-required.',
       auth: 'bearer',
       responses: {
         201: okObject('Posted', {
@@ -738,6 +725,25 @@ export const orderPaths = {
         }),
         400: { description: 'Empty, or an order a note cannot be keyed to' },
         503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
+  '/api/orders/{reference}/comments/{id}/attachment': {
+    get: operation('/api/orders/{reference}/comments/{id}/attachment', {
+      tag,
+      summary: 'Download a file attached to a message',
+      description:
+        'Takes the prefixed id the thread returns — `dn-1841`. Only a note on one of *this* order’s destination rows is served, and only a client-visible one, so a note id on its own reaches nothing: the ids are small integers on a MyISAM table with no order column, and without that check the route would be a way of counting through other clients’ attachments.' + NL + NL + '`attachment` holds a bare filename — the old application moved the upload to `web/dev/destination_notes_file/` and stored only the basename — so the file is looked for at that path relative to the upload roots and then by the bare name, covering a `LEGACY_UPLOAD_DIR` mounted at the old web root or at that one folder. Unset, or a miss in both, answers 404 saying the record exists and the file does not.',
+      auth: 'bearer',
+      responses: {
+        200: {
+          description: 'The file',
+          content: {
+            'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        404: { description: 'No such attachment on this order' },
       },
     }),
   },

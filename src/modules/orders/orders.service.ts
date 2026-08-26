@@ -5,10 +5,16 @@ import { Countries, OrderReturnDocumentDetails } from '../../models';
 import type { ClsOrder, Orders } from '../../models';
 import { materialiseChecklistQuietly } from '../../domain/checklist';
 import { orderReference } from '../../domain/orderReference';
+import {
+  readClsMilestoneDates,
+  readLegacyMilestoneDates,
+  type ClsMilestoneSources,
+} from '../../domain/milestones';
 import * as repository from './orders.repository';
 import {
   buildTimeline,
   toCommentView,
+  toDestinationCommentView,
   toDocumentView,
   toLegacyOrderView,
   toLegalisationDocumentView,
@@ -251,22 +257,101 @@ export const listForClient = async (
 };
 
 /**
- * The notes on an order, as the client may read them.
+ * The destination rows this order's consultant thread hangs off.
  *
- * `tbl_order_notes` joins on the legacy `order_no`, so a `tbl_cls_order` has no
- * notes to show unless its reference resolves to a number. Internal notes are
- * filtered out in the repository — see the note there, it is the most important
- * filter in this module.
+ * Exported because `orders.writes.addClientComment` needs the same answer to
+ * decide where a client's reply goes, and asking twice in two ways is how the
+ * read and the write drift apart.
+ */
+export const destinationIds = (resolved: ResolvedOrder): Promise<number[]> =>
+  resolved.family === 'cls'
+    ? repository.listClsDestinationIds(resolved.row.id)
+    : repository.listLegacyDestinationIds(resolved.row.order_no);
+
+/**
+ * The notes on an order, as the client may read them — both tables, one thread.
+ *
+ * ## Why two tables
+ *
+ * Because CLS writes in one and this API used to write in the other, and neither
+ * could see the other's messages.
+ *
+ * `tbl_order_destination_notes` is where a consultant actually types. Every
+ * order-view screen in CLS's admin puts its "Client comment" box inside the
+ * destination block and posts `ticketComment[<destination id>]`, and
+ * `ViewOrderController` files it against the destination — so this is the table
+ * holding the message a client is waiting to read. On the document-legalisation
+ * screen it is the *only* thread: that template's `tbl_order_notes` loop is
+ * `is_admin == 1 and note.document_type == notes.document_type`, which renders
+ * the chargeable "Notary / DFAT / $85" lines and nothing else. A client note
+ * written to `tbl_order_notes` appeared on no CLS screen at all.
+ *
+ * `tbl_order_notes` stays in the read for two reasons: it holds every note
+ * already written there — including the "Website order form" summary
+ * `orders.lodge` files at submission — and it is the only place an order with no
+ * destination row (clearance, voucher, document delivery) can have a thread.
+ *
+ * ## Ordering
+ *
+ * Newest first, matching what each table returned on its own, so the website's
+ * existing sort is unaffected. Merged on `postedAt` rather than concatenated,
+ * because a consultant's reply and a client's question have to interleave to read
+ * as a conversation. A note whose `date_added` will not parse sorts last rather
+ * than being dropped — it is still a message somebody sent.
  */
 export const comments = async (resolved: ResolvedOrder) => {
-  const key = paymentKey(resolved);
-  if (key === null) return [];
-
   const reference = clientReference(resolved);
+  const key = paymentKey(resolved);
 
-  const notes = await repository.listClientVisibleNotes(key);
+  const [orderNotes, destinationNotes] = await Promise.all([
+    key === null ? Promise.resolve([]) : repository.listClientVisibleNotes(key),
+    destinationIds(resolved).then(repository.listClientVisibleDestinationNotes),
+  ]);
 
-  return notes.map((note) => toCommentView(note, reference));
+  return [
+    ...orderNotes.map((note) => toCommentView(note, reference)),
+    ...destinationNotes.map((note) => toDestinationCommentView(note, reference)),
+  ].sort((left, right) => (right.postedAt ?? '').localeCompare(left.postedAt ?? ''));
+};
+
+/**
+ * One attachment from the consultant thread, checked against this order.
+ *
+ * The check is the point. A note id is a small integer from a MyISAM table with
+ * no order column on it, so the only way to know an attachment belongs to the
+ * caller's order is to confirm its `destination_id` is one of that order's
+ * destinations — the order itself having already been resolved for the caller.
+ * Without that, the route would serve any note's attachment to anyone who could
+ * count.
+ *
+ * Returns the bare stored filename; the route decides where to look for it.
+ */
+export const commentAttachment = async (
+  resolved: ResolvedOrder,
+  commentId: string
+): Promise<{ filename: string }> => {
+  const missing = notFound('We could not find that attachment.');
+
+  const numeric = /^dn-(\d+)$/.exec(commentId.trim())?.[1];
+  if (!numeric) throw missing;
+
+  const note = await repository.findDestinationNote(Number.parseInt(numeric, 10));
+  if (!note) throw missing;
+
+  // An internal note's attachment is as internal as its text.
+  if (note.is_admin !== null && note.is_admin !== 0) throw missing;
+
+  const ids = await destinationIds(resolved);
+  if (note.destination_id === null || !ids.includes(note.destination_id)) {
+    // Same wording as a note that does not exist: this must not become a way of
+    // asking which note ids are real.
+    throw missing;
+  }
+
+  const filename = clean(note.attachment);
+  if (!filename) throw missing;
+
+  return { filename };
 };
 
 /** The documents on an order, with any review note attached. */
@@ -331,14 +416,23 @@ export const documents = async (resolved: ResolvedOrder) => {
   ];
 };
 
-/** Everything that has happened to an order, in order. */
+/**
+ * Everything that has happened to an order, in order.
+ *
+ * Both note tables feed it, for the reason `comments` explains: the consultant's
+ * own messages live in `tbl_order_destination_notes`, so a timeline reading only
+ * `tbl_order_notes` showed the milestones and none of the correspondence. The
+ * destination notes' ids are prefixed on the way in so `note-<id>` stays unique
+ * across the two tables.
+ */
 export const timeline = async (
   resolved: ResolvedOrder
 ): Promise<TimelineEntry[]> => {
   const [order, key] = [await view(resolved), paymentKey(resolved)];
 
-  const [notes, payments] = await Promise.all([
+  const [notes, destinationNotes, payments] = await Promise.all([
     key === null ? Promise.resolve([]) : repository.listClientVisibleNotes(key),
+    destinationIds(resolved).then(repository.listClientVisibleDestinationNotes),
     key === null ? Promise.resolve([]) : repository.listPayments(key),
   ]);
 
@@ -347,36 +441,36 @@ export const timeline = async (
       ? clsMilestoneDates(resolved.row)
       : legacyMilestoneDates(resolved.row);
 
-  return buildTimeline(order, milestoneDates, notes, payments);
+  return buildTimeline(
+    order,
+    milestoneDates,
+    [
+      ...notes,
+      ...destinationNotes.map((note) => ({
+        id: `dn-${note.id}`,
+        date_added: note.date_added,
+        note: note.note,
+      })),
+    ],
+    payments
+  );
 };
 
-/** The four milestone dates off whichever detail table this order has. */
-const clsMilestoneDates = (row: ClsOrder): (string | null)[] => {
-  const withIncludes = row as unknown as {
-    policeClearanceDetails?: Record<string, unknown>[];
-    voucherDetails?: Record<string, unknown>[];
-    legalisationDetails?: Record<string, unknown>[];
-  };
+/**
+ * The four milestone dates, from wherever this order's service records them.
+ *
+ * Both readers live in `domain/milestones` so the timeline entries below and the
+ * stepper in `orders.presenter` can never disagree about where the dates are —
+ * they did, and a legalisation order's timeline went missing in the portal as a
+ * result.
+ */
+const clsMilestoneDates = (row: ClsOrder): (string | null)[] =>
+  // Cast because the include aliases are not on the model type: `ClsOrder`
+  // declares its own columns, and the eager-loaded children arrive beside them.
+  readClsMilestoneDates(row as ClsOrder & ClsMilestoneSources);
 
-  const detail =
-    withIncludes.policeClearanceDetails?.[0] ??
-    withIncludes.voucherDetails?.[0] ??
-    withIncludes.legalisationDetails?.[0];
-
-  return [
-    toIso(detail?.date_cls_received_all_items),
-    toIso(detail?.date_submitted_for_processing),
-    toIso(detail?.date_completed_and_received_at_cls),
-    toIso(detail?.date_order_on_route_and_closed),
-  ];
-};
-
-const legacyMilestoneDates = (row: Orders): (string | null)[] => [
-  toIso(row.police_clearance_date_cls_received_all_items),
-  toIso(row.police_clearance_date_submitted_for_processing),
-  toIso(row.police_clearance_date_completed_and_received_at_cls),
-  toIso(row.police_clearance_date_order_on_route_and_closed),
-];
+const legacyMilestoneDates = (row: Orders): (string | null)[] =>
+  readLegacyMilestoneDates(row);
 
 /** The payments and receipts on an order. */
 export const payments = async (resolved: ResolvedOrder) => {

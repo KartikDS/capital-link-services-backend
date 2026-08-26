@@ -86,6 +86,30 @@ const schema = z.object({
   MAX_UPLOAD_MB: integer(10),
   LEGACY_UPLOAD_DIR: z.string().optional(),
 
+  /**
+   * The bucket a client's documents are written to.
+   *
+   * All optional, and all four of `S3_BUCKET`, `S3_REGION`,
+   * `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` have to be present before
+   * anything is written to a bucket — see `env.uploads.s3`. A partial
+   * configuration is a configuration mistake, and a client's passport scan is not
+   * the thing to discover it on, so three-of-four falls back to the local disk
+   * and `/api/system/ready` reports which is in force.
+   *
+   * Not validated as required, because this deployment starts before CLS has
+   * supplied the credentials and has to keep taking uploads until it does.
+   */
+  S3_BUCKET: z.string().optional(),
+  S3_REGION: z.string().optional(),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  /** For an S3-compatible provider. Empty means AWS's own endpoint for the region. */
+  S3_ENDPOINT: z.string().optional(),
+  /** `bucket/key` in the path rather than `bucket.` in the host, which most non-AWS providers need. */
+  S3_FORCE_PATH_STYLE: booleanish(false),
+  /** An optional key prefix, so one bucket can hold more than this deployment. */
+  S3_PREFIX: z.string().optional(),
+
   GOOGLE_MAPS_API_KEY: z.string().optional(),
 
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
@@ -106,6 +130,42 @@ if (!parsed.success) {
 }
 
 const raw = parsed.data;
+
+/**
+ * The bucket's settings, or null when it is not fully configured.
+ *
+ * Null is the honest answer to a partial configuration rather than a reason to
+ * throw: a bucket name with no secret key cannot store anything, and refusing to
+ * boot over it would take the whole API down for a variable only the document
+ * routes need.
+ */
+const s3 = (() => {
+  const bucket = nonEmpty(raw.S3_BUCKET);
+  const region = nonEmpty(raw.S3_REGION);
+  const accessKeyId = nonEmpty(raw.S3_ACCESS_KEY_ID);
+  const secretAccessKey = nonEmpty(raw.S3_SECRET_ACCESS_KEY);
+
+  if (!bucket || !region || !accessKeyId || !secretAccessKey) return null;
+
+  /**
+   * Normalised to `something/` or the empty string.
+   *
+   * The prefix is concatenated onto a stored path, so it needs its trailing slash
+   * and must not carry a leading one — `/cls/x.pdf` and `cls/x.pdf` are two
+   * different keys in a bucket, and only the second is what anybody means.
+   */
+  const prefix = (nonEmpty(raw.S3_PREFIX) ?? '').replace(/^\/+|\/+$/g, '');
+
+  return {
+    bucket,
+    region,
+    accessKeyId,
+    secretAccessKey,
+    endpoint: nonEmpty(raw.S3_ENDPOINT),
+    forcePathStyle: raw.S3_FORCE_PATH_STYLE,
+    prefix: prefix ? `${prefix}/` : '',
+  } as const;
+})();
 
 export const env = {
   nodeEnv: raw.NODE_ENV,
@@ -157,6 +217,14 @@ export const env = {
     legacyDir: nonEmpty(raw.LEGACY_UPLOAD_DIR)
       ? path.resolve(raw.LEGACY_UPLOAD_DIR as string)
       : null,
+    /**
+     * The bucket new uploads go to, or null to use `dir` on this machine.
+     *
+     * `shared/storage/documents` is the only thing that reads this, and it reads
+     * the local paths above as well: a stored document may be in the bucket, under
+     * `dir`, or under `legacyDir`, and nothing in the database says which.
+     */
+    s3,
   },
 
   googleMapsApiKey: nonEmpty(raw.GOOGLE_MAPS_API_KEY),

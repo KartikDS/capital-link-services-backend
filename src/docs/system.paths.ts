@@ -57,12 +57,13 @@ export const systemPaths = {
       tag,
       summary: 'Whether every dependency this service needs is present',
       description:
-        'The database connection, the upload directory and the configured secrets, each reported separately — so a deployment that is failing says which piece is missing rather than only that it is not ready.',
+        'The database connection, the document storage and the configured secrets, each reported separately — so a deployment that is failing says which piece is missing rather than only that it is not ready. `documentStorage` is `s3+local` or `local`. `s3+local` means every document is written to the bucket **and** to `UPLOAD_DIR`; `local` means the bucket is not configured, so the only copy is on this machine’s own disk, which a replaceable container loses.',
       errors: {},
       responses: {
         200: okObject('Ready', {
           ready: { type: 'boolean' },
           checks: { type: 'object', additionalProperties: { type: 'boolean' } },
+          documentStorage: { type: 'string', enum: ['s3+local', 'local'] },
         }),
         503: { description: 'Something it depends on is not available' },
       },

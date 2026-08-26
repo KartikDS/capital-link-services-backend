@@ -1,19 +1,19 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../../config/env';
 import { authenticate, currentUserId } from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
+import { ALLOWED_EXTENSIONS, manyFiles, singleFile } from '../../middleware/upload';
 import {
-  ALLOWED_EXTENSIONS,
-  manyFiles,
-  resolveLegacyPath,
-  resolveUploadPath,
-  singleFile,
-} from '../../middleware/upload';
+  documentStorageDriver,
+  openDocument,
+  storedPathOf,
+} from '../../shared/storage/documents';
 import { badRequest, notFound } from '../../shared/errors';
-import { created, message, ok } from '../../shared/http/responses';
+import { created, message, ok, paged } from '../../shared/http/responses';
+import { pageMeta, readPage } from '../../shared/http/pagination';
+import { streamDocument } from '../../shared/http/streamDocument';
 import { addressSchema, validate, validParams, validQuery } from '../../shared/validation';
 import { logger } from '../../shared/logger';
 import * as orderWrites from '../orders/orders.writes';
@@ -33,6 +33,17 @@ import * as service from './portal.service';
 export const portalRoutes = Router();
 
 portalRoutes.use(authenticate);
+
+/**
+ * The page ceiling for the orders list — see the note on the route itself.
+ *
+ * Higher than `MAX_PER_PAGE` on purpose, and higher than any account CLS
+ * currently has. Raising the ceiling is also cheaper than paging to the same
+ * depth: `orders.listForClient` reads `limit + offset` rows from both tables to
+ * return `limit` of them, so five requests for 100 read 1,500 rows where one
+ * request for 500 reads 500.
+ */
+const PORTAL_ORDERS_MAX_PER_PAGE = 500;
 
 // ---------------------------------------------------------------------------
 // Profile
@@ -96,8 +107,26 @@ portalRoutes.patch(
 // Dashboard
 // ---------------------------------------------------------------------------
 
+/**
+ * GET /api/portal/orders
+ *
+ * Paged, and it says how many there are — `{ orders, pagination }`, where
+ * `pagination.total` counts both order tables rather than the page.
+ *
+ * `perPage` is allowed up to 500 here rather than the usual 100. The portal's
+ * orders table runs its search, its sort, its stage filters and their counts in
+ * the browser over the rows it holds, because `stage` is derived from joined
+ * milestone rows and the two order families are merged in JavaScript — there is
+ * no column to filter or count in SQL. So a page smaller than the client's
+ * history does not just hide rows, it makes every number on the screen a count
+ * of the page. A ceiling of 500 covers every account CLS has; past it the
+ * website reads the remaining pages and says that it truncated.
+ */
 portalRoutes.get('/orders', async (req: Request, res: Response) => {
-  ok(res, { orders: await service.portalOrders(currentUserId(req)) });
+  const page = readPage(req, PORTAL_ORDERS_MAX_PER_PAGE);
+  const result = await service.portalOrders(currentUserId(req), page);
+
+  paged(res, 'orders', result.orders, pageMeta(page, result.total));
 });
 
 portalRoutes.get('/stats', async (req: Request, res: Response) => {
@@ -188,12 +217,17 @@ const documentIdParam = z
 /**
  * GET /api/portal/documents/:id/download
  *
- * Streams the file after checking it belongs to the caller. Nothing under
- * `UPLOAD_DIR` is served statically — that is the whole point of this route.
+ * Streams the file after checking it belongs to the caller. Nothing is served
+ * statically from either place a document can be — that is the whole point of
+ * this route: the S3 bucket holds no public objects and `UPLOAD_DIR` is not
+ * mounted anywhere.
  *
- * A legacy path is resolved under `LEGACY_UPLOAD_DIR`, which is unset by
- * default; until CLS mounts the old application's document directory, a legacy
- * file answers 404 rather than this process reading from a guessed location.
+ * `openDocument` looks in the bucket, then under `UPLOAD_DIR`, then under
+ * `LEGACY_UPLOAD_DIR`, because the stored path does not say which of the three
+ * holds the file — a row written before S3 was configured has its file on disk.
+ * `LEGACY_UPLOAD_DIR` is unset by default, so until CLS mounts the old
+ * application's document directory a legacy file answers 404 rather than this
+ * process reading from a guessed location.
  */
 portalRoutes.get(
   '/documents/:id/download',
@@ -205,13 +239,13 @@ portalRoutes.get(
       id
     );
 
-    const resolved =
-      resolveUploadPath(storedPath) ?? resolveLegacyPath(storedPath);
+    const opened = await openDocument(storedPath);
 
-    if (!resolved || !fs.existsSync(resolved)) {
+    if (!opened) {
       logger.warn('Document row exists but the file does not', {
         documentId: id,
         storedPath,
+        driver: documentStorageDriver,
         legacyDirConfigured: env.uploads.legacyDir !== null,
       });
 
@@ -223,7 +257,7 @@ portalRoutes.get(
     // `attachment` rather than inline: these are passport scans, and a browser
     // rendering one in a tab is a browser caching one in a tab.
     res.setHeader('Content-Disposition', `attachment; filename="${path.basename(name)}"`);
-    res.sendFile(resolved);
+    streamDocument(opened, res, { documentId: id, storedPath });
   }
 );
 
@@ -280,11 +314,7 @@ portalRoutes.post(
     const file = req.file;
     if (!file) throw badRequest('Choose a photo to upload.');
 
-    const relative = path
-      .relative(env.uploads.dir, file.path)
-      .replace(/\\/g, '/');
-
-    await service.savePassportPhoto(currentUserId(req), relative);
+    await service.savePassportPhoto(currentUserId(req), storedPathOf(file));
 
     created(res, {
       photo: (await service.passportPhotos(currentUserId(req)))[0] ?? null,
@@ -301,10 +331,9 @@ portalRoutes.get(
 
     if (!photo) throw notFound('You have not submitted a passport photo.');
 
-    const resolved =
-      resolveUploadPath(photo.storedAs) ?? resolveLegacyPath(photo.storedAs);
+    const opened = await openDocument(photo.storedAs);
 
-    if (!resolved || !fs.existsSync(resolved)) {
+    if (!opened) {
       throw notFound('We could not find that photo file.');
     }
 
@@ -312,7 +341,7 @@ portalRoutes.get(
       'Content-Disposition',
       `attachment; filename="${path.basename(photo.storedAs)}"`
     );
-    res.sendFile(resolved);
+    streamDocument(opened, res, { photo: photo.storedAs });
   }
 );
 

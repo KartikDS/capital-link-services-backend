@@ -23,12 +23,36 @@ interface DumpTable {
   columns: Set<string>;
 }
 
-/** Parses the CREATE TABLE statements independently of the generator. */
+/**
+ * Parses the CREATE TABLE statements independently of the generator.
+ *
+ * ## The duplication with `scripts/generateModels.ts` is deliberate — keep it
+ *
+ * That script has a `parseDump` of its own and this one does not import it. If
+ * it did, a bug in the generator's parser would be invisible here: the gate
+ * would compare the generator's misreading of the dump against models built from
+ * that same misreading, and agree with itself. Two independent readers of one
+ * fixture is the whole mechanism by which this file can fail.
+ *
+ * **But the dump-format assumptions must stay in sync.** Twice now a single
+ * detail of the fixture has killed both parsers at once — most recently the
+ * `\(\n` anchor below, against a dump that is 100% CRLF, which left both reading
+ * zero tables. So: change either parser's handling of *the file's shape* — line
+ * endings, the CREATE TABLE framing, how a column line is recognised — and make
+ * the same change in the other. Change how either one *interprets* what it
+ * parsed, and leave the other alone; that difference is the point.
+ */
 const parseDump = (): Map<string, DumpTable> => {
   const sql = fs.readFileSync(DUMP, 'utf8');
   const tables = new Map<string, DumpTable>();
 
-  const pattern = /CREATE TABLE `([^`]+)` \(\n([\s\S]*?)\n\)\s*ENGINE=/g;
+  // `\r?\n`, not `\n`: the dump is checked in with CRLF endings, and a pattern
+  // anchored on a bare newline matched nothing in it — `parseDump` returned zero
+  // tables, every assertion below became a comparison against an empty map, and
+  // the suite reported 183 failures that were all the same failure. A gate that
+  // cannot parse its own fixture is worse than no gate, because it reads as 183
+  // real problems and gets scrolled past.
+  const pattern = /CREATE TABLE `([^`]+)` \(\r?\n([\s\S]*?)\r?\n\)\s*ENGINE=/g;
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(sql)) !== null) {

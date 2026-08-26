@@ -399,6 +399,23 @@ const MILESTONE_COLUMNS = {
 } as const;
 
 /**
+ * The same four dates on a destination row.
+ *
+ * A stamp has to land where CLS's own admin will read it back, and for a public
+ * visa or a document legalisation that is the destination row, not the detail
+ * table — `viewDocLegalisation` writes `visa_date_cls_received_all_items` and
+ * `docLegalisation.html.twig` renders it from there. Writing only the detail
+ * table would leave a consultant who stamped a milestone here looking at a blank
+ * field in the admin they use every day. See `domain/milestones`.
+ */
+const DESTINATION_MILESTONE_COLUMNS = {
+  received: 'visa_date_cls_received_all_items',
+  submitted: 'visa_date_submitted_for_processing',
+  completed: 'visa_date_completed_and_received_at_cls',
+  closed: 'visa_date_order_on_route_and_closed',
+} as const;
+
+/**
  * PATCH /api/admin/orders/:id/milestone
  *
  * Stamps one of the four milestone dates on whichever detail table the order
@@ -434,6 +451,7 @@ adminRoutes.patch(
           : toLegacyDateTime();
 
     const {
+      ClsOrderDestinations,
       DocumentLegalizationOrderDetails,
       PoliceClearanceOrderDetails,
       RussianVisaVoucherOrderDetails,
@@ -453,17 +471,38 @@ adminRoutes.patch(
       (await RussianVisaVoucherOrderDetails.findOne({ where: { order_id: id } })) ??
       (await DocumentLegalizationOrderDetails.findOne({ where: { order_id: id } }));
 
-    if (!detail) {
+    /**
+     * Every destination on the order — none for a clearance or a voucher, one for
+     * a legalisation, one per country for a public visa. All of them get the same
+     * stamp: the portal's stepper is one line for the whole order, and it counts
+     * a step as reached only once every destination has it.
+     */
+    const destinations = await ClsOrderDestinations.count({ where: { order_id: id } });
+
+    if (!detail && destinations === 0) {
       throw badRequest(
-        'That order has no service detail row, so milestone dates cannot be recorded against it.'
+        'That order has no service detail row or destination, so milestone dates cannot be recorded against it.'
       );
     }
 
-    await (
-      detail as unknown as {
-        update: (values: Record<string, string | null>) => Promise<unknown>;
-      }
-    ).update({ [column]: value });
+    if (detail) {
+      await (
+        detail as unknown as {
+          update: (values: Record<string, string | null>) => Promise<unknown>;
+        }
+      ).update({ [column]: value });
+    }
+
+    if (destinations > 0) {
+      await ClsOrderDestinations.update(
+        { [DESTINATION_MILESTONE_COLUMNS[body.milestone]]: value } as unknown as Record<
+          string,
+          string | null
+        >,
+        { where: { order_id: id } }
+      );
+    }
+
     await order.update({ date_last_saved: toLegacyDateTime() });
 
     await audit(req, 'order.milestone', {

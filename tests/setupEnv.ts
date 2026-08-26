@@ -35,3 +35,24 @@ process.env.INTERNAL_API_SECRET = 'test-internal-secret';
 process.env.UPLOAD_DIR = './uploads';
 process.env.MAX_UPLOAD_MB = '10';
 process.env.LOG_LEVEL = 'error';
+
+/**
+ * No bucket, so the suite exercises the local storage driver.
+ *
+ * Empty rather than deleted, and that distinction matters here. `config/env`
+ * calls `dotenv.config()` on import, and dotenv fills in any variable that is
+ * *absent* from the process environment — so deleting these would hand the suite
+ * whatever bucket the developer running it happens to have configured, and a test
+ * that wrote a fixture would write it into a real one. An empty string is present,
+ * so dotenv leaves it alone, and `nonEmpty` reads it as unset.
+ *
+ * `tests/unit/documentStorage` is the suite that sets them, and it sets them to
+ * empty for the same reason rather than deleting them.
+ */
+process.env.S3_BUCKET = '';
+process.env.S3_REGION = '';
+process.env.S3_ACCESS_KEY_ID = '';
+process.env.S3_SECRET_ACCESS_KEY = '';
+process.env.S3_ENDPOINT = '';
+process.env.S3_PREFIX = '';
+process.env.S3_FORCE_PATH_STYLE = 'false';

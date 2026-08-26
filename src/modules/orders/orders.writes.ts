@@ -1,7 +1,7 @@
-import path from 'node:path';
 import {
   ClsOrder,
   ClsOrderDocuments,
+  OrderDestinationNotes,
   OrderDlChecklist,
   OrderNotes,
   OrderTravellerDetails,
@@ -10,6 +10,7 @@ import {
 import { scopeOfOrder } from '../../domain/checklist';
 import { badRequest, conflict } from '../../shared/errors';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
+import { storedPathOf } from '../../shared/storage/documents';
 import { clean, fullName } from '../../shared/text';
 import { logger } from '../../shared/logger';
 import {
@@ -18,8 +19,8 @@ import {
   LEGACY_ORDER_STATUS,
   SERVICE_SLUG_TO_ORDER_TYPE,
 } from '../../domain/codes';
-import { toCommentView } from './orders.presenter';
-import { clientReference } from './orders.service';
+import { toCommentView, toDestinationCommentView } from './orders.presenter';
+import { clientReference, destinationIds } from './orders.service';
 import type { ResolvedOrder } from './orders.service';
 
 /**
@@ -172,10 +173,12 @@ export const attachDocuments = async (
    * uploads.
    */
   for (const file of files) {
-    // Relative to UPLOAD_DIR, matching how the old application stores paths.
-    const stored = path
-      .relative(path.resolve(process.env.UPLOAD_DIR ?? './uploads'), file.path)
-      .replace(/\\/g, '/');
+    /**
+     * The path to record, which is the same value whether the bytes went to the
+     * S3 bucket or to `UPLOAD_DIR`: relative, forward slashes, matching how the
+     * old application stores paths in this column.
+     */
+    const stored = storedPathOf(file);
 
     const line = declaredFor(file.originalname);
 
@@ -389,47 +392,108 @@ const recordNote = async (
  * text on the next navigation — a client who typed "my travel date has moved"
  * watched it appear on screen and reach nobody.
  *
- * ## What it is not
+ * ## Which table, and why it changed
  *
- * Not a message thread. `tbl_order_notes` is a flat log CLS's own admin writes
- * into, with `is_admin` deciding who may read a row — so a client's note lands in
- * the same list a consultant reads and is answered there. There is no delivery
- * receipt, no read state and no reply-to, because the table has columns for none
- * of them.
+ * `tbl_order_destination_notes` when the order has a destination row, and that is
+ * the whole point of this function. CLS's admin draws its consultant thread from
+ * that table — every order-view screen posts `ticketComment[<destination id>]`
+ * and `ViewOrderController` files it against the destination — so a note written
+ * anywhere else is a note no consultant is shown. On the document-legalisation
+ * screen specifically, the `tbl_order_notes` loop is filtered
+ * `is_admin == 1 and note.document_type == notes.document_type`: it renders the
+ * chargeable document lines and nothing else, so a client's note in that table
+ * reached **no CLS screen at all**. It was written, it was readable back in the
+ * portal, and it was invisible to the people it was addressed to.
  *
- * **`is_admin` is 0 and `user_type` is `client`, and both matter.** An internal
- * note is filtered out of what a client may read (see
- * `repository.listClientVisibleNotes`), so writing one as `is_admin: 1` would hide
- * the client's own message from them. And `status` is deliberately left unset: it
- * is the admin's triage column, and a client cannot decide their own order is
- * 'Action required'.
+ * `tbl_order_notes` remains the fallback, because an order with no destination row
+ * has no destination thread to write to — the clearance, voucher and
+ * document-delivery lodges write none, matching their legacy controllers. Those
+ * notes are still read back (`orders.service.comments` reads both), so a client on
+ * one of those services is not talking into nothing; a consultant reads them where
+ * they always did.
+ *
+ * ## The two flags, both load-bearing
+ *
+ * **`is_admin` is 0.** On this table that is not "not internal" — it is the
+ * client-facing thread, the box CLS's admin labels "Client comment" and emails to
+ * the client on save. `is_admin: 1` is staff-only ("Admin comment"), and a client's
+ * own message written there would be hidden from them and filed among CLS's
+ * private notes.
+ *
+ * **`user_type` is `Client`, capitalised.** The admin's template gates its
+ * `[Edit]`/`[Delete]` controls on `note.user_type == 'Admin'` and prints the value
+ * verbatim in the byline — `- by Alex Taylor (Client)`. So this exact spelling is
+ * what makes a client's message render as theirs and stay uneditable by the
+ * consultant, which is the correct treatment of somebody else's words.
+ *
+ * `status` does not exist on this table, so there is no triage column to leave
+ * unset — and on the fallback path it is left unset for the reason it always was:
+ * a client cannot decide their own order is 'Action required'.
  */
 export const addClientComment = async (
   resolved: ResolvedOrder,
   body: string,
   authorId: number
-): Promise<{ comment: ReturnType<typeof toCommentView> }> => {
+): Promise<{
+  comment: ReturnType<typeof toCommentView | typeof toDestinationCommentView>;
+}> => {
   const note = clean(body);
 
   if (!note) {
     throw badRequest('Write something before posting it.');
   }
 
-  /**
-   * The reference this note is filed under, and the key it is stored against.
-   *
-   * They are not the same thing. The client is answered with the reference the
-   * order itself is presented under — `clientReference`, which the website
-   * matches this note against when it draws the order's thread. The row goes in
-   * under the digits: `tbl_order_notes.order_no` is an `int` and a
-   * `tbl_cls_order` reference is text, so the trailing number is the only key the
-   * two families' notes can share — the same rule `orders.service.comments` reads
-   * them back by. An order whose reference has no digits in it cannot be
-   * commented on, and that is refused rather than written somewhere it would
-   * never be found.
-   */
   const reference = clientReference(resolved);
+  const client = await UserClient.findByPk(authorId);
+  // Stored alongside the id because neither note table joins to a client, and
+  // the admin's own screens read this column to say who wrote a line.
+  const authorName = fullName(client?.fname, client?.lname) ?? 'Client';
 
+  /**
+   * The consultant thread, when this order has one.
+   *
+   * The first destination, where an order has several. A visa order with two
+   * destinations has two threads in the admin and the client has one
+   * conversation, so a reply has to be filed somewhere definite — the first is
+   * the one the admin renders first and the one a consultant writing about the
+   * order as a whole uses. The read merges all of them, so nothing is lost either
+   * way.
+   */
+  const [destinationId] = await destinationIds(resolved);
+
+  if (destinationId !== undefined) {
+    const row = await OrderDestinationNotes.create({
+      destination_id: destinationId,
+      note,
+      date_added: toLegacyDateTime(),
+      note_by: authorId,
+      note_by_name: authorName,
+      user_type: 'Client',
+      is_admin: 0,
+      is_pin: 0,
+    });
+
+    logger.info('Client comment added to the consultant thread', {
+      destinationId,
+      noteId: row.id,
+      clientId: authorId,
+    });
+
+    return { comment: toDestinationCommentView(row, reference) };
+  }
+
+  /**
+   * The fallback, and the key it is filed under.
+   *
+   * The client is answered with the reference the order itself is presented under
+   * — `clientReference`, which the website matches this note against when it
+   * draws the order's thread. The row goes in under the digits:
+   * `tbl_order_notes.order_no` is an `int` and a `tbl_cls_order` reference is
+   * text, so the trailing number is the only key the two families' notes can
+   * share — the same rule `orders.service.comments` reads them back by. An order
+   * whose reference has no digits in it cannot be commented on, and that is
+   * refused rather than written somewhere it would never be found.
+   */
   const numeric =
     resolved.family === 'legacy'
       ? resolved.row.order_no
@@ -441,16 +505,12 @@ export const addClientComment = async (
     );
   }
 
-  const client = await UserClient.findByPk(authorId);
-
   const row = await OrderNotes.create({
     order_no: numeric,
     note,
     date_added: toLegacyDateTime(),
     note_by: authorId,
-    // The name is stored alongside the id because `tbl_order_notes` has no join
-    // to a client, and the admin's own screens read this column.
-    note_by_name: fullName(client?.fname, client?.lname) ?? 'Client',
+    note_by_name: authorName,
     user_type: 'client',
     is_admin: 0,
     is_deleted: 0,

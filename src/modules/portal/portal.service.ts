@@ -175,10 +175,27 @@ export const saveAddress = async (
 // Orders and stats
 // ---------------------------------------------------------------------------
 
-export const portalOrders = async (clientId: number, limit = 50) => {
-  const result = await orders.listForClient(clientId, { limit, offset: 0 });
-  return result.orders;
-};
+/**
+ * A page of the client's orders, and how many they have in total.
+ *
+ * The total is the point. This used to take a `limit` defaulting to 50, read the
+ * first page and return the rows on their own — so `/api/portal/orders` had no
+ * way to say how many orders a client had, and the portal's table counted the
+ * rows it had been handed instead. On CLS's walk-in account, which carries over
+ * four hundred orders across the two tables, the effect was a screen that showed
+ * the newest fifty, badged them "All orders 50", reported every stage filter as
+ * a count over those fifty, and could not find an order from last year by its
+ * own reference — the search runs over the rows in hand.
+ *
+ * `listForClient` has always returned the real total beside the page, counted
+ * over both tables. This function was the only thing throwing it away.
+ *
+ * The default page stays at 50 for a caller that asks for no page at all.
+ */
+export const portalOrders = async (
+  clientId: number,
+  page: { limit: number; offset: number } = { limit: 50, offset: 0 }
+): Promise<orders.OrderListResult> => orders.listForClient(clientId, page);
 
 /**
  * The dashboard tiles.
@@ -477,16 +494,54 @@ export const removeDocument = async (
 export const invoices = async (clientId: number): Promise<present.InvoiceView[]> => {
   const list = await orders.listForClient(clientId, { limit: 200, offset: 0 });
 
+  /**
+   * Every order's quote lines in one query, rather than one query per order.
+   *
+   * This used to run `OrderDlQuotes.findAll` inside the loop below: two hundred
+   * sequential round trips for a client with two hundred orders, against a pool
+   * of ten connections — and `balance` calls this function again, so the
+   * dashboard paid for it twice. On CLS's walk-in account that was enough to
+   * hold the pool past the website's eight-second timeout, and whichever of the
+   * dashboard's other reads lost the race rendered as "We could not load your
+   * orders just now" on a client who has four hundred of them.
+   *
+   * `sent_group` still orders the rows, so the grouping below sees them in the
+   * same sequence it did when each order was fetched on its own.
+   */
+  const numericOf = (reference: string): number | null => {
+    const parsed = Number.parseInt(/(\d+)$/.exec(reference)?.[1] ?? '', 10);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  };
+
+  const orderNumbers = list.orders
+    .map((order) => numericOf(order.reference))
+    .filter((value): value is number => value !== null);
+
+  const quoteRows =
+    orderNumbers.length === 0
+      ? []
+      : await OrderDlQuotes.findAll({
+          where: { order_no: { [Op.in]: orderNumbers }, sent_date: { [Op.ne]: null } },
+          order: [['sent_group', 'ASC']],
+        });
+
+  const quotesByOrder = new Map<number, OrderDlQuotes[]>();
+
+  for (const quote of quoteRows) {
+    if (quote.order_no === null) continue;
+    quotesByOrder.set(quote.order_no, [
+      ...(quotesByOrder.get(quote.order_no) ?? []),
+      quote,
+    ]);
+  }
+
   const results: present.InvoiceView[] = [];
 
   for (const order of list.orders) {
-    const numeric = Number.parseInt(/(\d+)$/.exec(order.reference)?.[1] ?? '', 10);
+    const numeric = numericOf(order.reference);
 
-    if (Number.isSafeInteger(numeric)) {
-      const quotes = await OrderDlQuotes.findAll({
-        where: { order_no: numeric, sent_date: { [Op.ne]: null } },
-        order: [['sent_group', 'ASC']],
-      });
+    if (numeric !== null) {
+      const quotes = quotesByOrder.get(numeric) ?? [];
 
       if (quotes.length > 0) {
         // One invoice per batch that was sent to the client.

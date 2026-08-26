@@ -118,8 +118,17 @@ const parseDump = (sql: string): Table[] => {
   const tables: Table[] = [];
 
   // CREATE TABLE `name` ( ...body... ) ENGINE=... ;
+  //
+  // `tests/unit/schemaFidelity.test.ts` has its own copy of this parser, on
+  // purpose — it must not import this one, or the gate would check the
+  // generator's reading of the dump against models built from that same reading
+  // and always agree. See the long note there. What it does mean is that a
+  // change to how *the dump's shape* is read belongs in both: the `\r?\n`
+  // anchors below were `\n` in both files at once, against a CRLF dump, and both
+  // parsed zero tables — this script threw "No CREATE TABLE statements parsed"
+  // and the gate silently passed nothing.
   const createPattern =
-    /CREATE TABLE `([^`]+)` \(\n([\s\S]*?)\n\)\s*ENGINE=(\w+)[^;]*?(?:DEFAULT CHARSET=(\w+))?[^;]*;/g;
+    /CREATE TABLE `([^`]+)` \(\r?\n([\s\S]*?)\r?\n\)\s*ENGINE=(\w+)[^;]*?(?:DEFAULT CHARSET=(\w+))?[^;]*;/g;
 
   let match: RegExpExecArray | null;
 

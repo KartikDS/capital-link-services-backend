@@ -85,16 +85,16 @@ export const portalPaths = {
       tag,
       summary: 'Your orders, for the portal table',
       description:
-        'The same rows as `/api/orders/mine`, in the shape the portal’s table renders. Both families, merged and paged.',
+        'The same rows as `/api/orders/mine`, in the shape the portal’s table renders. Both families, merged and paged, with `pagination.total` counted over both order tables rather than over the page.' +
+        '\n\n**`perPage` goes up to 500 here**, against 100 elsewhere. The portal’s table runs its search, its sort, its stage filters and their counts in the browser over the rows it holds — `stage` is derived from joined milestone rows and the two families are merged after the read, so there is no column to filter or count in SQL. A page shorter than the client’s history therefore makes every number on that screen a count of the page, which is what it did: a walk-in account of four hundred orders was served fifty and badged them "All orders 50".' +
+        '\n\nRaising the ceiling is also cheaper than paging to the same depth, because `listForClient` reads `limit + offset` rows to return `limit` of them.',
       auth: 'bearer',
-      query: [
-        {
-          name: 'stage',
-          description: 'Filter on the derived stage.',
-          enum: ['action-required', 'in-progress', 'ready', 'completed'],
-        },
-        ...PAGING,
-      ],
+      // No `stage` parameter. It was documented here and never implemented — the
+      // route reads no query beyond the paging — so a caller filtering on it got
+      // an unfiltered list and no error. Stage is derived rather than stored, so
+      // filtering it in SQL is not a parameter's worth of work; the portal does
+      // it in the browser over the whole history instead.
+      query: [...PAGING],
       responses: { 200: okList('Your orders', 'orders', 'Order', true) },
     }),
   },

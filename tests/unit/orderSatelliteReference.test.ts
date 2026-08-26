@@ -21,12 +21,18 @@ const listClsDocuments = jest.fn();
 const listDocumentNotes = jest.fn();
 const listOrderChecklist = jest.fn();
 const listClientVisibleNotes = jest.fn();
+const listClsDestinationIds = jest.fn();
+const listLegacyDestinationIds = jest.fn();
+const listClientVisibleDestinationNotes = jest.fn();
 
 jest.mock('../../src/modules/orders/orders.repository', () => ({
   listClsDocuments,
   listDocumentNotes,
   listOrderChecklist,
   listClientVisibleNotes,
+  listClsDestinationIds,
+  listLegacyDestinationIds,
+  listClientVisibleDestinationNotes,
 }));
 
 jest.mock('../../src/domain/checklist', () => ({
@@ -76,6 +82,9 @@ beforeEach(() => {
       note_by_name: 'Sapna Sharma',
     },
   ]);
+  listClsDestinationIds.mockResolvedValue([]);
+  listLegacyDestinationIds.mockResolvedValue([]);
+  listClientVisibleDestinationNotes.mockResolvedValue([]);
 });
 
 describe('clientReference', () => {
@@ -143,5 +152,45 @@ describe('an order’s notes', () => {
     await comments(clsOrder(10034341));
 
     expect(listClientVisibleNotes).toHaveBeenCalledWith(10034341);
+  });
+
+  it('carry the same reference when they come from the consultant thread', async () => {
+    // `tbl_order_destination_notes` is keyed on a destination row, not on the
+    // order — so the reference cannot come from the note and is derived from the
+    // order exactly as the documents' is.
+    listClientVisibleNotes.mockResolvedValue([]);
+    listClsDestinationIds.mockResolvedValue([77]);
+    listClientVisibleDestinationNotes.mockResolvedValue([
+      {
+        id: 3,
+        note: 'Please send the original certificate.',
+        user_type: 'Admin',
+        date_added: null,
+        note_by_name: 'Bhavika Batra',
+        attachment: null,
+        is_admin: 0,
+      },
+    ]);
+
+    const [note] = await comments(clsOrder(10034341));
+
+    expect(note).toMatchObject({
+      // Prefixed for the same reason `dl-` is: both note tables auto-increment
+      // from 1, so a bare id would collide across the merged thread.
+      id: 'dn-3',
+      reference: 'CLS-10034341',
+      authorRole: 'Consultant',
+      body: 'Please send the original certificate.',
+    });
+  });
+
+  it('reads the thread from the destinations the order actually has', async () => {
+    listClsDestinationIds.mockResolvedValue([77, 78]);
+
+    await comments(clsOrder(10034341));
+
+    // Every destination, because the admin renders one comment box per
+    // destination and the client has one conversation about the order.
+    expect(listClientVisibleDestinationNotes).toHaveBeenCalledWith([77, 78]);
   });
 });

@@ -1,5 +1,10 @@
+import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { env } from '../../config/env';
+import { logger } from '../../shared/logger';
+import { openDocument } from '../../shared/storage/documents';
+import { streamDocument } from '../../shared/http/streamDocument';
 import {
   authenticate,
   authenticateOptional,
@@ -784,6 +789,77 @@ referenceRoutes.post(
     const { body } = req.body as { body: string };
 
     created(res, await addClientComment(resolved, body, currentUserId(req)));
+  }
+);
+
+/**
+ * GET /api/orders/:reference/comments/:id/attachment
+ *
+ * The file a consultant attached to a message on this order. The comment id is
+ * the prefixed one the thread returns — `dn-1841` — and `service.commentAttachment`
+ * refuses any note that is not on one of this order's destinations, so a note id
+ * alone is not enough to reach a file.
+ *
+ * ## Where the bytes are looked for
+ *
+ * `tbl_order_destination_notes.attachment` holds a bare filename: the old
+ * application moved the upload to `web/dev/destination_notes_file/` and stored
+ * only the basename, and its admin serves it straight back from that folder
+ * (`viewPublicVisaMediaAction`, `mediaSource=1`). So two candidates are tried,
+ * both through `openDocument` — which checks the bucket, `UPLOAD_DIR`, then
+ * `LEGACY_UPLOAD_DIR` for each:
+ *
+ * 1. `dev/destination_notes_file/<name>` — the path relative to the old web root,
+ *    which is what `LEGACY_UPLOAD_DIR` points at when it is mounted whole;
+ * 2. the bare `<name>` — for a deployment that mounted that one folder directly,
+ *    which is how the legacy path for `tbl_cls_order_documents` already behaves.
+ *
+ * Neither is a guess about the *filename*; both are guesses about which directory
+ * CLS mounted, and trying two costs a `stat`. A miss answers 404 with wording
+ * that says the record exists and the file does not, because that is the true
+ * state and it is the consultant who can resend it.
+ */
+referenceRoutes.get(
+  '/comments/:id/attachment',
+  validate(
+    z.object({
+      reference: schemas.referenceParamSchema.shape.reference,
+      id: z
+        .string()
+        .trim()
+        .max(32)
+        .regex(/^dn-\d+$/, 'That is not a comment attachment id.'),
+    }),
+    'params'
+  ),
+  async (req: Request, res: Response) => {
+    const { id } = validParams<{ id: string }>(req);
+    const resolved = await resolveFromParams(req);
+    const { filename } = await service.commentAttachment(resolved, id);
+
+    const opened =
+      (await openDocument(`dev/destination_notes_file/${filename}`)) ??
+      (await openDocument(filename));
+
+    if (!opened) {
+      logger.warn('A comment attachment is recorded but the file is not there', {
+        commentId: id,
+        filename,
+        legacyDirConfigured: env.uploads.legacyDir !== null,
+      });
+
+      throw notFound(
+        'We hold a record of that attachment but not the file itself. Please ask your consultant to resend it.'
+      );
+    }
+
+    // `attachment` rather than inline, for the reason the documents route gives:
+    // a browser rendering a scan in a tab is a browser caching one in a tab.
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${path.basename(filename)}"`
+    );
+    streamDocument(opened, res, { commentId: id, storedPath: filename });
   }
 );
 

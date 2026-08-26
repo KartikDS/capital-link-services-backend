@@ -5,6 +5,10 @@ import { isDatabaseConnected, sequelize } from '../../config/database';
 import { UNMODELLED_TABLES, generatedModels } from '../../models';
 import { ALLOWED_EXTENSIONS } from '../../middleware/upload';
 import { ok } from '../../shared/http/responses';
+import {
+  documentStorageDriver,
+  documentStorageIsRemote,
+} from '../../shared/storage/documents';
 import { logger } from '../../shared/logger';
 
 /**
@@ -150,7 +154,25 @@ systemRoutes.get('/system/ready', (_req: Request, res: Response) => {
     legacyDocumentsMounted: env.uploads.legacyDir !== null,
     addressLookup: env.googleMapsApiKey !== null,
     writesEnabled: !env.database.readOnly,
+    /**
+     * Whether a second copy of each document leaves this machine.
+     *
+     * Reported because the failure it catches is silent: with `S3_BUCKET` or its
+     * credentials unset, documents are written to the container's own disk and
+     * nowhere else, and every upload still succeeds — until the container is
+     * replaced and a client's passport scan goes with it. Nothing in a response
+     * to a client would show this, so it is stated here.
+     */
+    documentStorageRemote: documentStorageIsRemote,
   };
 
-  ok(res, { ready: checks.database, checks });
+  ok(res, {
+    ready: checks.database,
+    checks,
+    /**
+     * `'s3+local'` when every upload is written to the bucket *and* the disk,
+     * `'local'` when the disk is the only copy.
+     */
+    documentStorage: documentStorageDriver,
+  });
 });

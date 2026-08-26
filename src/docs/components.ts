@@ -347,7 +347,7 @@ export const components = {
     Comment: {
       type: 'object',
       description:
-        'A note on an order, from `tbl_order_notes`. The same shape whether a consultant or the client wrote it — `authorRole` is what tells them apart, and a note a consultant marked internal is never returned at all.',
+        'One message on an order, from either of the two tables that hold one. The same shape whichever it came from and whoever wrote it — `authorRole` is what tells the sides apart, and a note marked internal is never returned at all.\n\n`tbl_order_destination_notes` is the consultant thread: CLS’s admin draws its “Client comment” box inside the destination block and files what a consultant types against the destination row, so this is where the correspondence on an order actually lives. Those ids carry a `dn-` prefix, because both tables auto-increment from 1 and a merged thread needs them distinct.\n\n`tbl_order_notes` holds the rest: the summary the order form files at submission, and the thread on an order with no destination row at all — clearance, voucher and document delivery, whose legacy controllers write none. Those ids are bare.',
       properties: {
         id: { type: 'string' },
         reference: { type: 'string' },
@@ -355,6 +355,24 @@ export const components = {
         authorRole: { type: 'string', enum: ['Client', 'Consultant'] },
         postedAt: { type: 'string', format: 'date-time', nullable: true },
         body: { type: 'string' },
+        actionRequired: {
+          type: 'boolean',
+          enum: [true],
+          description:
+            'Present only when a consultant triaged the note as waiting on the client. Read from `tbl_order_notes.status`; a destination note never carries it, because that table has no `status` column.',
+        },
+        attachments: {
+          type: 'array',
+          description:
+            'Files attached to this message, read back through `/api/orders/{reference}/comments/{id}/attachment`. Absent when there are none. One per message is the schema’s model rather than a limit of this API: the admin’s multi-file upload writes one note row per file repeating the same text, so a message sent with three files genuinely arrives as three messages.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              name: { type: 'string' },
+            },
+          },
+        },
       },
     },
 

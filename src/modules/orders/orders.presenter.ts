@@ -2,6 +2,7 @@ import type {
   ClsOrder,
   ClsOrderDocumentNotes,
   ClsOrderDocuments,
+  OrderDestinationNotes,
   OrderDlChecklist,
   OrderNotes,
   OrderTravellerDetails,
@@ -30,6 +31,12 @@ import {
 } from '../../domain/codes';
 import { orderReference } from '../../domain/orderReference';
 import { toConsultantView, type ConsultantView } from '../../domain/company';
+import {
+  readClsMilestoneDates,
+  readLegacyMilestoneDates,
+  type MilestoneDestinationRow,
+  type MilestoneDetailRow,
+} from '../../domain/milestones';
 
 /**
  * Turning an order row into the shape the website renders.
@@ -129,10 +136,10 @@ const detailLine = (
 /**
  * How far through the milestones an order is, and what to call where it is.
  *
- * The four dates live on the per-service detail tables — police clearance,
- * voucher and legalisation each have their own copy of the same four columns.
- * Whichever detail row an order has, the dates mean the same thing, so they are
- * read into one array and counted.
+ * The dates themselves are found by `domain/milestones`, which knows the two
+ * places the schema keeps them — the per-service detail tables and the
+ * destination rows CLS's public-visa and legalisation admin screens stamp. This
+ * only counts and labels what that returns.
  */
 interface Milestones {
   progress: number;
@@ -150,21 +157,24 @@ interface Milestones {
  */
 const MILESTONE_IDS = ['received', 'submitted', 'completed', 'closed'] as const;
 
-const readMilestones = (
-  received: unknown,
-  submitted: unknown,
-  completed: unknown,
-  closed: unknown
-): Milestones => {
-  const dates = [toIso(received), toIso(submitted), toIso(completed), toIso(closed)];
-
-  const reached = dates.filter((date) => date !== null).length;
+/** Counts and labels four already-resolved ISO dates. */
+const readMilestones = (dates: readonly (string | null)[]): Milestones => {
+  /**
+   * The furthest slot with a date, by position rather than by count.
+   *
+   * Counting was wrong wherever a stamp had been missed: an order received and
+   * already back at CLS with nothing against "submitted" has two dates, and the
+   * count called that "Submitted for processing" — one step behind where the
+   * order actually was. Consultants stamp these by hand, on four separate
+   * fields, so a gap is an ordinary thing rather than a broken row.
+   */
+  const furthest = dates.reduce((last, date, index) => (date === null ? last : index), -1);
 
   return {
     progress: progressFromMilestones(dates),
-    // The label of the last milestone reached, or null before the first one —
+    // The label of the furthest milestone reached, or null before the first one —
     // which the website renders as the status instead.
-    milestone: reached > 0 ? (MILESTONE_LABELS[reached - 1] ?? null) : null,
+    milestone: furthest >= 0 ? (MILESTONE_LABELS[furthest] ?? null) : null,
     dates,
     slots: dates.map((at, index) => ({
       id: MILESTONE_IDS[index] ?? String(index),
@@ -207,24 +217,14 @@ interface ClsOrderWithIncludes extends ClsOrder {
   } | null;
   travellers?: OrderTravellerDetails[];
   documents?: ClsOrderDocuments[];
-  policeClearanceDetails?: {
-    date_cls_received_all_items: string | null;
-    date_submitted_for_processing: string | null;
-    date_completed_and_received_at_cls: string | null;
-    date_order_on_route_and_closed: string | null;
-  }[];
-  voucherDetails?: {
-    date_cls_received_all_items: string | null;
-    date_submitted_for_processing: string | null;
-    date_completed_and_received_at_cls: string | null;
-    date_order_on_route_and_closed: string | null;
-  }[];
-  legalisationDetails?: {
-    date_cls_received_all_items: string | null;
-    date_submitted_for_processing: string | null;
-    date_completed_and_received_at_cls: string | null;
-    date_order_on_route_and_closed: string | null;
-  }[];
+  policeClearanceDetails?: MilestoneDetailRow[];
+  voucherDetails?: MilestoneDetailRow[];
+  legalisationDetails?: MilestoneDetailRow[];
+  /**
+   * The destination rows, which carry this order's timeline for a public visa or
+   * a document legalisation. See `domain/milestones`.
+   */
+  destinations?: MilestoneDestinationRow[];
 }
 
 const countryName = (
@@ -238,25 +238,14 @@ const countryName = (
 /**
  * The milestone dates for whichever service this order is.
  *
- * Each `*_order_details` table carries its own copy of the same four columns,
- * so the first detail row present wins. An order with no detail row at all —
- * which happens for the plain visa types — falls back to four nulls, giving
- * zero progress rather than an error.
+ * `readClsMilestoneDates` reads the service's detail row and the order's
+ * destination rows, because the admin screens write to one or the other
+ * depending on the service. An order with neither — a draft, or a service whose
+ * timeline CLS has not started — gives four nulls and zero progress rather than
+ * an error.
  */
-const clsMilestones = (order: ClsOrderWithIncludes): Milestones => {
-  const detail =
-    order.policeClearanceDetails?.[0] ??
-    order.voucherDetails?.[0] ??
-    order.legalisationDetails?.[0] ??
-    null;
-
-  return readMilestones(
-    detail?.date_cls_received_all_items,
-    detail?.date_submitted_for_processing,
-    detail?.date_completed_and_received_at_cls,
-    detail?.date_order_on_route_and_closed
-  );
-};
+const clsMilestones = (order: ClsOrderWithIncludes): Milestones =>
+  readMilestones(readClsMilestoneDates(order));
 
 export const toOrderView = (
   order: ClsOrderWithIncludes,
@@ -343,6 +332,8 @@ interface LegacyOrderWithIncludes extends Orders {
   } | null;
   travellers?: OrderTravellers[];
   notes?: OrderNotes[];
+  /** `tbl_order_destinations` — where a legacy visa order's timeline is. */
+  destinations?: MilestoneDestinationRow[];
 }
 
 /**
@@ -351,8 +342,9 @@ interface LegacyOrderWithIncludes extends Orders {
  * The milestone dates here are on the order row itself rather than a detail
  * table — `police_clearance_date_cls_received_all_items` and its three
  * siblings — which is one of the differences that made `tbl_cls_order` worth
- * building. Only the police clearance set exists on this table, so a legacy
- * visa order shows no progress. That is a gap in the data, not in this code.
+ * building. Only the police clearance set exists on the order row, so anything
+ * else reads its timeline off `tbl_order_destinations`, which
+ * `readLegacyMilestoneDates` does.
  */
 export const toLegacyOrderView = (
   order: LegacyOrderWithIncludes,
@@ -362,12 +354,7 @@ export const toLegacyOrderView = (
   const travellers = order.travellers ?? [];
   const status = order.status ?? LEGACY_ORDER_STATUS.ORDERED;
 
-  const milestones = readMilestones(
-    order.police_clearance_date_cls_received_all_items,
-    order.police_clearance_date_submitted_for_processing,
-    order.police_clearance_date_completed_and_received_at_cls,
-    order.police_clearance_date_order_on_route_and_closed
-  );
+  const milestones = readMilestones(readLegacyMilestoneDates(order));
 
   const amountCents = toCents(order.grand_total);
 
@@ -435,6 +422,61 @@ export const toCommentView = (note: OrderNotes, reference: string) => ({
   // cheaper to read.
   ...(clean(note.status)?.toLowerCase() === 'action required'
     ? { actionRequired: true as const }
+    : {}),
+});
+
+/**
+ * A note from the consultant thread — `tbl_order_destination_notes`.
+ *
+ * The same shape `toCommentView` returns, because the portal draws one thread and
+ * must not care which of the two note tables a line came from. Two differences,
+ * both forced by the table:
+ *
+ * **The id is prefixed.** Both note tables auto-increment from 1, so a bare id
+ * would collide across a merged thread and React would key two different messages
+ * the same. `dn-` marks a destination note, the same trick
+ * `portal.service.parseDocumentId` uses for `dl-`, and it is what the attachment
+ * download route parses back.
+ *
+ * **`actionRequired` is never set.** That flag comes from `tbl_order_notes.status`
+ * and this table has no `status` column at all — so a destination note carries no
+ * triage state, rather than one being invented for it.
+ *
+ * `attachment` holds a bare filename, which is all the admin's file input records
+ * (`setAttachment(basename)`, with the bytes moved to
+ * `web/dev/destination_notes_file/`). One file per row is the whole model: the
+ * admin's multi-file upload writes one note row per file, repeating the same text,
+ * so a message sent with three attachments genuinely is three rows here. They are
+ * left as three, because merging them would mean guessing that same-text-same-
+ * second rows were one message.
+ */
+export const toDestinationCommentView = (
+  note: OrderDestinationNotes,
+  reference: string
+) => ({
+  id: `dn-${note.id}`,
+  reference,
+  author: clean(note.note_by_name) ?? 'Capital Link Services',
+  /**
+   * Which side wrote it. `user_type` is `Admin` on everything CLS's admin writes
+   * — `ViewOrderController` sets it from the staff session for both boxes — and
+   * `Client` on what this API writes, so the comparison is the same one
+   * `toCommentView` makes and is normalised for the same reason.
+   */
+  authorRole: clean(note.user_type)?.toLowerCase() === 'client' ? 'Client' : 'Consultant',
+  postedAt: toIso(note.date_added),
+  body: clean(note.note) ?? '',
+  // Only present when there is one, so a message without a file carries no empty
+  // array for the website to test.
+  ...(clean(note.attachment)
+    ? {
+        attachments: [
+          {
+            id: `dn-${note.id}`,
+            name: clean(note.attachment) as string,
+          },
+        ],
+      }
     : {}),
 });
 
@@ -608,10 +650,25 @@ export interface TimelineEntry {
   kind: 'submitted' | 'milestone' | 'note' | 'payment';
 }
 
+/**
+ * A dated line on an order, from either note table.
+ *
+ * Structural rather than `OrderNotes`, because the timeline reads three columns
+ * and both note tables have all three — so a consultant's message from
+ * `tbl_order_destination_notes` belongs on the timeline just as much as a note
+ * from `tbl_order_notes`, and nothing here needs to know which it came from. The
+ * caller prefixes the id, which is what keeps the two tables' ids from colliding.
+ */
+export interface TimelineNote {
+  id: number | string;
+  date_added: string | null;
+  note: string | null;
+}
+
 export const buildTimeline = (
   order: OrderView,
   milestoneDates: readonly (string | null)[],
-  notes: readonly OrderNotes[],
+  notes: readonly TimelineNote[],
   payments: readonly Payment[]
 ): TimelineEntry[] => {
   const entries: TimelineEntry[] = [];

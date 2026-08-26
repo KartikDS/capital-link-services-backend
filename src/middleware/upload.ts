@@ -1,9 +1,14 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
-import multer, { type FileFilterCallback } from 'multer';
+import multer, { type FileFilterCallback, type StorageEngine } from 'multer';
 import type { Request } from 'express';
 import { env } from '../config/env';
+import {
+  ALLOWED_EXTENSIONS,
+  contentTypeFor,
+  mediaTypesFor,
+} from '../domain/documentFormats';
+import { discardDocument, saveDocument } from '../shared/storage/documents';
 import { badRequest } from '../shared/errors';
 
 /**
@@ -11,39 +16,31 @@ import { badRequest } from '../shared/errors';
  *
  * The legacy tables store a filename in a `varchar(255)` — `document`,
  * `passport_photo`, `attachment_file` — and the old application resolved it
- * against a directory on its own server. This API writes new files under
- * `UPLOAD_DIR` and records the same kind of relative name, so the two remain
- * interchangeable.
+ * against a directory on its own server. This API records the same kind of
+ * relative name and hands the bytes to `shared/storage/documents`, which puts
+ * them in the S3 bucket when one is configured and under `UPLOAD_DIR` when it is
+ * not. **The recorded name is identical either way**, so a row written before the
+ * bucket existed and one written after are interchangeable — see that module for
+ * why they have to be.
  *
- * **Nothing is served statically.** `/uploads` is not mounted as a static
- * directory anywhere in this codebase, and it must not be: these files are
- * passport scans and birth certificates, and a static mount makes every one of
- * them readable by anyone who can guess a filename. Downloads go through an
- * endpoint that checks ownership first.
+ * **Nothing is served statically, from either place.** `/uploads` is not mounted
+ * as a static directory anywhere in this codebase and the bucket holds no public
+ * objects: these files are passport scans and birth certificates, and either would
+ * make every one of them readable by anyone who can guess a name. Downloads go
+ * through an endpoint that checks ownership first.
  */
+
+export { ALLOWED_EXTENSIONS };
 
 /**
- * What may be uploaded.
+ * Where a stored document resolves to, re-exported.
  *
- * An allowlist by both extension and MIME type, and both have to agree. A
- * browser will happily report `application/pdf` for a file called `x.php`, and
- * the extension is what ends up in a `varchar` column that some other system
- * may later hand to a web server.
+ * These moved to `shared/storage/documents` when S3 arrived, because the read
+ * path needs them and importing the upload middleware to get at a path resolver
+ * would have pulled multer into it. Re-exported so the existing callers and their
+ * tests keep their import.
  */
-const ALLOWED: Record<string, readonly string[]> = {
-  '.pdf': ['application/pdf'],
-  '.jpg': ['image/jpeg'],
-  '.jpeg': ['image/jpeg'],
-  '.png': ['image/png'],
-  '.webp': ['image/webp'],
-  '.heic': ['image/heic', 'image/heif'],
-  '.doc': ['application/msword'],
-  '.docx': [
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  ],
-};
-
-export const ALLOWED_EXTENSIONS = Object.keys(ALLOWED);
+export { resolveLegacyPath, resolveUploadPath } from '../shared/storage/documents';
 
 /**
  * The client's own filename, reduced to something safe to put in a path.
@@ -68,9 +65,9 @@ export const slugForPath = (name: string): string =>
 /**
  * A stored name that cannot escape its directory or collide.
  *
- * The client's filename is never used on disk *as given*. It arrives from a
- * browser, it can contain `../`, a null byte or four hundred characters of
- * Unicode, and any of those in a path is a problem.
+ * The client's filename is never used on disk — or as a bucket key — *as given*.
+ * It arrives from a browser, it can contain `../`, a null byte or four hundred
+ * characters of Unicode, and any of those in a path is a problem.
  *
  * ## Why a slug of it is kept anyway
  *
@@ -94,39 +91,121 @@ export const storedName = (originalName: string): string => {
   return `${stamp}-${nonce}${slug ? `-${slug}` : ''}${extension}`;
 };
 
-const ensureDir = (dir: string): void => {
-  fs.mkdirSync(dir, { recursive: true });
+/**
+ * The directory segment a request's uploads belong under.
+ *
+ * One per client, so neither a bucket listing nor a directory listing puts every
+ * client's documents side by side, and a mistaken bulk delete is bounded. A
+ * request with no session — a guest lodging an order through the internal
+ * documents endpoint — lands in `unassigned`, and the row that records it is what
+ * ties it to an order.
+ */
+const directoryFor = (req: Request): string => {
+  const owner = req.auth?.sub;
+  return owner ? `clients/${String(owner)}` : 'unassigned';
 };
 
-const storage = multer.diskStorage({
-  destination: (req: Request, _file, callback) => {
-    // One subdirectory per client, so a directory listing does not put every
-    // client's documents side by side, and a mistaken bulk delete is bounded.
-    const owner = req.auth?.sub;
-    const dir = owner
-      ? path.join(env.uploads.dir, 'clients', String(owner))
-      : path.join(env.uploads.dir, 'unassigned');
+/**
+ * Multer's storage, delegating to whichever driver is configured.
+ *
+ * A custom engine rather than `multer.diskStorage` or `multer-s3`. The first
+ * cannot reach a bucket; the second is a second dependency that would know only
+ * about S3, leaving the local path to be handled by swapping engines at boot and
+ * two code paths to keep in step. This one asks `storage/documents` to write the
+ * stream and reports back whichever of a disk path or a bucket key came of it.
+ *
+ * ## What the callback has to return
+ *
+ * `info` is merged onto the file object, so `size` is what downstream reads as
+ * `file.size` and `key` is what `storedPathOf` reads to build the database value.
+ * `key` is set on the file **before** the write begins as well, because multer's
+ * abort path only cleans up an in-flight file that has a `path` on it — see
+ * `_removeFile`.
+ */
+class DocumentStorage implements StorageEngine {
+  _handleFile(
+    req: Request,
+    file: Express.Multer.File,
+    callback: (error?: unknown, info?: Partial<Express.Multer.File>) => void
+  ): void {
+    const directory = directoryFor(req);
+    const filename = storedName(file.originalname);
+    const storedPath = `${directory}/${filename}`;
 
-    try {
-      ensureDir(dir);
-      callback(null, dir);
-    } catch (error) {
-      callback(error as Error, dir);
-    }
-  },
+    // Set now rather than in the callback, so a request that fails while this
+    // file is still being written leaves multer something to clean up. This
+    // mirrors what `diskStorage` does with `file.path`.
+    file.key = storedPath;
+    file.path = path.join(env.uploads.dir, storedPath);
 
-  filename: (_req, file, callback) => {
-    callback(null, storedName(file.originalname));
-  },
-});
+    // Already gone — the request was aborted before this file's turn. Matches
+    // `diskStorage`, which returns without calling back so multer's pending
+    // count is settled by the abort rather than by a write that never happened.
+    if (file.stream.destroyed) return;
 
+    saveDocument({
+      storedPath,
+      stream: file.stream,
+      // The mimetype the browser sent, which `fileFilter` has already checked
+      // against the extension. Derived from the name only if it is missing.
+      contentType: file.mimetype || contentTypeFor(file.originalname),
+    })
+      .then((saved) => {
+        callback(null, {
+          key: storedPath,
+          storedIn: saved.copies,
+          destination: path.dirname(file.path),
+          filename,
+          // The local copy's path when the disk took it. When only the bucket
+          // did, the path it *would* have had — nothing reads it to find the
+          // bytes (`storedPathOf` and `discardDocument` both work from `key`),
+          // and a null here would be a lie of a different kind.
+          path: saved.absolutePath ?? file.path,
+          size: saved.bytes,
+        });
+      })
+      .catch((error: unknown) => callback(error));
+  }
+
+  /**
+   * Throws away every copy of a file multer has abandoned.
+   *
+   * Called for each file already written when a request fails — one file in a set
+   * breaking the size limit is the ordinary cause, and it must not leave the other
+   * nine stored against nothing. `discardDocument` works from the stored path and
+   * removes the bucket object *and* the local copy, which matters here: removing
+   * one of the two would leave the read path happily serving the other.
+   *
+   * The callback is always given `null`. `discardDocument` logs what it could not
+   * remove; surfacing it here would replace the client's "that file is too large"
+   * with a storage error about the cleanup.
+   */
+  _removeFile(
+    _req: Request,
+    file: Express.Multer.File,
+    callback: (error: Error | null) => void
+  ): void {
+    void discardDocument(file.key ?? file.path).then(() => callback(null));
+  }
+}
+
+/**
+ * What may be uploaded.
+ *
+ * An allowlist by both extension and MIME type, and both have to agree. A browser
+ * will happily report `application/pdf` for a file called `x.php`, and the
+ * extension is what ends up in a `varchar` column that some other system may
+ * later hand to a web server. The table itself lives in `domain/documentFormats`,
+ * because the download route needs the same one to decide what to serve a file
+ * back as.
+ */
 const fileFilter = (
   _req: Request,
   file: Express.Multer.File,
   callback: FileFilterCallback
 ): void => {
   const extension = path.extname(file.originalname).toLowerCase();
-  const permitted = ALLOWED[extension];
+  const permitted = mediaTypesFor(extension);
 
   if (!permitted) {
     callback(
@@ -150,7 +229,7 @@ const fileFilter = (
 };
 
 export const upload = multer({
-  storage,
+  storage: new DocumentStorage(),
   fileFilter,
   limits: {
     fileSize: env.uploads.maxBytes,
@@ -166,35 +245,6 @@ export const singleFile = upload.single('file');
 
 /** Several files, matching the portal's multi-select upload. */
 export const manyFiles = upload.array('documents', 10);
-
-/**
- * Where a stored name resolves to on disk, or null if it escapes the root.
- *
- * The null case is the point. A column value of `../../etc/passwd` — whether
- * from an old bug or a deliberate write — must not resolve, and checking the
- * resolved path is inside the root is the only reliable way to know.
- */
-export const resolveUploadPath = (
-  storedPath: string,
-  root: string = env.uploads.dir
-): string | null => {
-  const resolved = path.resolve(root, storedPath);
-  const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-
-  return resolved === root || resolved.startsWith(rootWithSep) ? resolved : null;
-};
-
-/**
- * Where a legacy document lives, or null.
- *
- * Null when `LEGACY_UPLOAD_DIR` is unset, which is the default. Until CLS
- * mounts the old application's document directory, a download of a legacy file
- * answers "not available" rather than reading from a path this process guessed.
- */
-export const resolveLegacyPath = (storedPath: string): string | null => {
-  if (!env.uploads.legacyDir) return null;
-  return resolveUploadPath(storedPath, env.uploads.legacyDir);
-};
 
 /** Extension and size, for the `meta` line the portal renders. */
 export const describeFile = (
@@ -216,13 +266,4 @@ export const describeFile = (
   }
 
   return parts.length > 0 ? parts.join(' · ') : null;
-};
-
-/** Size on disk, or null when the file is missing. */
-export const fileSize = (absolutePath: string): number | null => {
-  try {
-    return fs.statSync(absolutePath).size;
-  } catch {
-    return null;
-  }
 };

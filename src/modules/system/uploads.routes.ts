@@ -5,6 +5,7 @@ import { env } from '../../config/env';
 import { authenticate } from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
 import { ALLOWED_EXTENSIONS, manyFiles } from '../../middleware/upload';
+import { storedPathOf } from '../../shared/storage/documents';
 import { badRequest } from '../../shared/errors';
 import { created, ok } from '../../shared/http/responses';
 import { validate } from '../../shared/validation';
@@ -107,9 +108,15 @@ uploadRoutes.post(
 
     created(res, {
       files: files.map((file) => ({
-        storedAs: path.relative(env.uploads.dir, file.path).replace(/\\/g, '/'),
+        storedAs: storedPathOf(file),
         name: file.originalname,
         sizeBytes: file.size,
+        /**
+         * Where the bytes went. One entry per place, so a file stored in both
+         * the bucket and on disk appears once here as `['s3', 'local']` rather
+         * than twice in the list above.
+         */
+        storedIn: file.storedIn ?? [],
       })),
       note:
         'These files are on disk but not recorded against an order. Attach them with POST /api/orders/{reference}/documents — anything left unattached is not visible to CLS.',

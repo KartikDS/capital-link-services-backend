@@ -142,14 +142,14 @@ export const adminPaths = {
       tag,
       summary: 'Stamp a milestone date',
       description:
-        'Stamps one of the four milestone dates on whichever detail table the order has. **The progress bar a client sees is counted from these**, so this is the endpoint that moves it — there is no separate progress column to set.',
+        'Stamps one of the four milestone dates on whichever detail table the order has, and on its destination rows — which is where CLS’s own public-visa and document-legalisation screens read them back from. **The progress bar a client sees is counted from these**, so this is the endpoint that moves it — there is no separate progress column to set.',
       auth: 'bearer',
       body: {
         schema: body(
           {
             milestone: {
               type: 'string',
-              enum: ['received', 'lodged', 'processing', 'returned'],
+              enum: ['received', 'submitted', 'completed', 'closed'],
               description: 'Which of the four dates to stamp.',
             },
             at: f.string('ISO-8601. Defaults to now.'),

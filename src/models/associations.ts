@@ -236,8 +236,23 @@ export const applyAssociations = (): void => {
 
   // `tbl_order_destination_notes.destination_id` points at a destination row in
   // either family — the column name does not say which, and the note tables are
-  // MyISAM so nothing constrained it. Mapped to the legacy family because that
-  // is the one whose destinations the old admin screens annotate.
+  // MyISAM so nothing constrained it. Both are mapped, because CLS's admin
+  // genuinely annotates both: `GlobalController.getDestinationNotesByDestId` is
+  // called with a `tbl_cls_order_destinations` id from the current
+  // `getClsOrderDestinationsByOrderNo`, and with a `tbl_order_destinations` id
+  // from the older `getOrderDestinationsByOrderNo` — and the admin's edit and
+  // delete actions resolve a note's `destination_id` in whichever holds it.
+  //
+  // The CLS mapping is the one that matters for anything this API lodges: every
+  // order it writes is a `tbl_cls_order` with a `tbl_cls_order_destinations`
+  // row, so that is where the consultant thread on a new order hangs.
+  M.ClsOrderDestinations.hasMany(M.OrderDestinationNotes, {
+    foreignKey: 'destination_id',
+    sourceKey: 'id',
+    as: 'notes',
+    ...LOOSE,
+  });
+
   M.OrderDestinations.hasMany(M.OrderDestinationNotes, {
     foreignKey: 'destination_id',
     sourceKey: 'id',
