@@ -21,6 +21,7 @@ import {
   UserClient,
 } from '../../models';
 import { orderIdFromReference } from '../../domain/orderReference';
+import type { ClsMilestoneSources } from '../../domain/milestones';
 import { LEGACY_SUBMITTED_FROM } from '../../domain/codes';
 
 /**
@@ -304,6 +305,130 @@ export const listClsOrders = (
     // orders, which turns "you have 4 orders" into "you have 19".
     distinct: true,
   });
+
+/**
+ * Just enough of every order to work out what stage it is at, and nothing else.
+ *
+ * ## Why this is not another list read
+ *
+ * The portal's stage counts — the four tiles and the five filter badges — were
+ * each computed by loading a page of orders and counting it in JavaScript, over
+ * two different page sizes. So the tiles counted the newest 200 and the badges
+ * counted the newest 500, and a walk-in account with more orders than either got
+ * two different sets of numbers on one screen, neither of them its total.
+ *
+ * The fix is to count every order rather than a page of them, which is only
+ * affordable if a countable order is cheap. It is: `stage` needs the outstanding
+ * document flag and two of the four milestone dates for a `tbl_cls_order` row,
+ * and nothing but `status` for a `tbl_orders` row. So this reads ids and dates —
+ * no names, no totals, no 145-column rows — and the whole account comes back for
+ * less than one page of the list read.
+ *
+ * ## Why it does not count in SQL
+ *
+ * Because `stage` is derived, not stored, and the derivation is subtle: the four
+ * dates live in either a per-service detail table or the destination rows
+ * depending on which admin screen stamped them, and a multi-destination order
+ * counts a slot as reached only when every destination has it. Writing that as
+ * SQL would mean a second implementation of `domain/milestones` and
+ * `clsStageOf`, and the first time the two drifted the tiles would disagree with
+ * the table again — which is the bug being fixed. So the rows come back and the
+ * existing functions bucket them. One rule, one place.
+ */
+const MILESTONE_DATE_COLUMNS = [
+  'date_cls_received_all_items',
+  'date_submitted_for_processing',
+  'date_completed_and_received_at_cls',
+  'date_order_on_route_and_closed',
+];
+
+const DESTINATION_DATE_COLUMNS = MILESTONE_DATE_COLUMNS.map(
+  (column) => `visa_${column}`
+);
+
+/**
+ * One order, carrying only what decides its stage.
+ *
+ * Declared rather than inferred because the model classes do not describe their
+ * associations — `ClsOrder` has no `documents` property as far as TypeScript is
+ * concerned, which is the same gap that lets a narrowed `attributes` list go
+ * unnoticed (see `CLS_LIST_ATTRIBUTES`). Extending `ClsMilestoneSources` is what
+ * makes this row passable straight to `readClsMilestoneDates`.
+ */
+export interface ClsStageSource extends ClsMilestoneSources {
+  id: number;
+  documents?: readonly { status?: number | null }[] | null;
+}
+
+export interface LegacyStageSource {
+  order_no: number;
+  status: number | null;
+}
+
+export const listStageSources = async (
+  clientId: number
+): Promise<{ cls: ClsStageSource[]; legacy: LegacyStageSource[] }> => {
+  const [cls, legacy] = await Promise.all([
+    ClsOrder.findAll({
+      attributes: ['id'],
+      where: { client_id: clientId, ...CLS_SUBMITTED },
+      include: [
+        {
+          model: ClsOrderDestinations,
+          as: 'destinations',
+          required: false,
+          separate: true,
+          attributes: ['order_id', ...DESTINATION_DATE_COLUMNS],
+        },
+        {
+          model: PoliceClearanceOrderDetails,
+          as: 'policeClearanceDetails',
+          required: false,
+          separate: true,
+          attributes: ['order_id', ...MILESTONE_DATE_COLUMNS],
+        },
+        {
+          model: RussianVisaVoucherOrderDetails,
+          as: 'voucherDetails',
+          required: false,
+          separate: true,
+          attributes: ['order_id', ...MILESTONE_DATE_COLUMNS],
+        },
+        {
+          model: DocumentLegalizationOrderDetails,
+          as: 'legalisationDetails',
+          required: false,
+          separate: true,
+          attributes: ['order_id', ...MILESTONE_DATE_COLUMNS],
+        },
+        // `status` only: which document it is does not change the stage, and the
+        // one question asked of it is whether any is unattended or rejected.
+        {
+          model: ClsOrderDocuments,
+          as: 'documents',
+          required: false,
+          separate: true,
+          attributes: ['order_id', 'status'],
+        },
+      ],
+    }),
+    // A legacy order's stage is `status` and nothing else — `legacyStageOf` takes
+    // no dates. Two columns for the whole family.
+    Orders.findAll({
+      attributes: ['order_no', 'status'],
+      where: { client_id: clientId, ...LEGACY_SUBMITTED },
+    }),
+  ]);
+
+  // Cast rather than typed through: `findAll` returns the model class, which
+  // declares every column and no association, so it describes neither what was
+  // selected nor what was included. The declared shapes above are the honest
+  // description of what these rows carry.
+  return {
+    cls: cls as unknown as ClsStageSource[],
+    legacy: legacy as unknown as LegacyStageSource[],
+  };
+};
 
 /** Unsubmitted rows — the legacy schema's equivalent of a saved draft. */
 export const listClsDrafts = (clientId: number): Promise<ClsOrder[]> =>

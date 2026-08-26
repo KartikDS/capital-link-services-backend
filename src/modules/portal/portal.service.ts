@@ -11,7 +11,15 @@ import { notFound } from '../../shared/errors';
 import { toLegacyDate, toLegacyDateTime } from '../../shared/dates';
 import { clean } from '../../shared/text';
 import { logger } from '../../shared/logger';
-import { DOCUMENT_STATUS, ENABLED } from '../../domain/codes';
+import {
+  clsStageOf,
+  legacyStageOf,
+  DOCUMENT_STATUS,
+  ENABLED,
+  LEGACY_ORDER_STATUS,
+  type PortalStage,
+} from '../../domain/codes';
+import { readClsMilestoneDates } from '../../domain/milestones';
 import { orderIdFromReference, orderReference } from '../../domain/orderReference';
 import { toConsultantView } from '../../domain/company';
 import * as orders from '../orders/orders.service';
@@ -197,31 +205,108 @@ export const portalOrders = async (
   page: { limit: number; offset: number } = { limit: 50, offset: 0 }
 ): Promise<orders.OrderListResult> => orders.listForClient(clientId, page);
 
+/** Every order on the account, bucketed by the stage the portal shows. */
+export interface StageCounts {
+  total: number;
+  'action-required': number;
+  'in-progress': number;
+  ready: number;
+  completed: number;
+}
+
+/**
+ * The stage counts, over the whole account rather than a page of it.
+ *
+ * ## What this replaces
+ *
+ * Both the tiles and the table's filter badges used to count a page of loaded
+ * orders — the tiles the newest 200, the badges the newest 500. On CLS's walk-in
+ * account, which has more orders than either, that put two contradictory sets of
+ * numbers on one screen: "Completed 164" beside "Order on route and closed 404",
+ * the same stage counted over two different windows, and neither of them the
+ * account's total.
+ *
+ * Counting every order is affordable because a *countable* order is cheap — see
+ * `listStageSources`, which reads ids and dates rather than orders.
+ *
+ * ## It reuses the derivation rather than restating it
+ *
+ * `clsStageOf`, `legacyStageOf` and `readClsMilestoneDates` are the same
+ * functions the presenter uses to put a stage on each row. That is deliberate and
+ * it is the whole reason this is a row read and not four `COUNT`s: a SQL version
+ * would be a second copy of rules that live in `domain/milestones` — where the
+ * dates sit in a detail table or on the destination rows depending on which admin
+ * screen stamped them, and a multi-destination order reaches a slot only when
+ * every destination has — and the first time the two copies drifted, the tiles
+ * would contradict the table again. One rule, one place, counted twice.
+ */
+export const stageCounts = async (clientId: number): Promise<StageCounts> => {
+  const { cls, legacy } = await orderRepository.listStageSources(clientId);
+
+  const counts: StageCounts = {
+    total: cls.length + legacy.length,
+    'action-required': 0,
+    'in-progress': 0,
+    ready: 0,
+    completed: 0,
+  };
+
+  const bucket = (stage: PortalStage) => {
+    counts[stage] += 1;
+  };
+
+  for (const order of cls) {
+    const documents = order.documents ?? [];
+
+    // Unattended or rejected: either way the next move is the client's. Same
+    // test as `toOrderView`.
+    const actionRequired = documents.some(
+      (document) =>
+        document.status === DOCUMENT_STATUS.UNATTENDED ||
+        document.status === DOCUMENT_STATUS.REJECTED
+    );
+
+    const dates = readClsMilestoneDates(order);
+
+    bucket(
+      clsStageOf(actionRequired, {
+        completedAtCls: dates[2] !== null,
+        closed: dates[3] !== null,
+      })
+    );
+  }
+
+  for (const order of legacy) {
+    // `false` for the documents flag, matching the list presenter: the legacy
+    // family has no document table of its own to be waiting on.
+    bucket(legacyStageOf(order.status ?? LEGACY_ORDER_STATUS.ORDERED, false));
+  }
+
+  return counts;
+};
+
 /**
  * The dashboard tiles.
  *
- * Counted from the orders themselves rather than from a summary table, because
- * there is not one. Four counts over a client's own rows is cheap; a client has
- * tens of orders, not thousands.
+ * Counted over the whole account by `stageCounts` rather than over a page. This
+ * used to read 200 orders and count those, which is why the tiles and the orders
+ * table disagreed on an account with more than 200.
  */
 export const stats = async (clientId: number): Promise<present.StatView[]> => {
-  const [list, outstanding] = await Promise.all([
-    orders.listForClient(clientId, { limit: 200, offset: 0 }),
+  const [counts, outstanding] = await Promise.all([
+    stageCounts(clientId),
     orderRepository.countOutstandingDocuments(clientId),
   ]);
 
-  const active = list.orders.filter(
-    (order) => order.stage === 'in-progress' || order.stage === 'action-required'
-  ).length;
-
-  const completed = list.orders.filter((order) => order.stage === 'completed').length;
-  const ready = list.orders.filter((order) => order.stage === 'ready').length;
-
   return present.buildStats({
-    activeOrders: active,
+    // "Jobs we are working on for you" is both stages that are still moving.
+    activeOrders: counts['in-progress'] + counts['action-required'],
+    // Documents rather than orders, and already a real `COUNT` over the whole
+    // account — it was the one tile that stayed right while the others counted a
+    // page.
     actionRequired: outstanding,
-    readyDocuments: ready,
-    completedOrders: completed,
+    readyDocuments: counts.ready,
+    completedOrders: counts.completed,
     overdueCents: 0,
   });
 };

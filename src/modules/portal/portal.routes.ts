@@ -11,7 +11,9 @@ import {
   storedPathOf,
 } from '../../shared/storage/documents';
 import { badRequest, notFound } from '../../shared/errors';
-import { created, message, ok, paged } from '../../shared/http/responses';
+// `ok` rather than `paged` for the orders list: that helper emits exactly
+// `{ key, pagination }` and this response also carries `counts`.
+import { created, message, ok } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { streamDocument } from '../../shared/http/streamDocument';
 import { addressSchema, validate, validParams, validQuery } from '../../shared/validation';
@@ -43,7 +45,7 @@ portalRoutes.use(authenticate);
  * return `limit` of them, so five requests for 100 read 1,500 rows where one
  * request for 500 reads 500.
  */
-const PORTAL_ORDERS_MAX_PER_PAGE = 500;
+const PORTAL_ORDERS_MAX_PER_PAGE = 1_000;
 
 // ---------------------------------------------------------------------------
 // Profile
@@ -113,7 +115,7 @@ portalRoutes.patch(
  * Paged, and it says how many there are — `{ orders, pagination }`, where
  * `pagination.total` counts both order tables rather than the page.
  *
- * `perPage` is allowed up to 500 here rather than the usual 100. The portal's
+ * `perPage` is allowed up to 1,000 here rather than the usual 100. The portal's
  * orders table runs its search, its sort, its stage filters and their counts in
  * the browser over the rows it holds, because `stage` is derived from joined
  * milestone rows and the two order families are merged in JavaScript — there is
@@ -124,9 +126,28 @@ portalRoutes.patch(
  */
 portalRoutes.get('/orders', async (req: Request, res: Response) => {
   const page = readPage(req, PORTAL_ORDERS_MAX_PER_PAGE);
-  const result = await service.portalOrders(currentUserId(req), page);
+  const clientId = currentUserId(req);
 
-  paged(res, 'orders', result.orders, pageMeta(page, result.total));
+  const [result, counts] = await Promise.all([
+    service.portalOrders(clientId, page),
+    service.stageCounts(clientId),
+  ]);
+
+  /**
+   * `counts` alongside the page, because the portal's filter badges cannot be
+   * counted from it.
+   *
+   * The table filters and searches in the browser over the rows it holds, so it
+   * badged each stage with a count of the page — "All orders 500" on an account
+   * with more than 500, beside tiles that counted the newest 200 and disagreed.
+   * These are counted over every order the client has, so the badges are true
+   * whatever size page the website asked for.
+   */
+  ok(res, {
+    orders: result.orders,
+    pagination: pageMeta(page, result.total),
+    counts,
+  });
 });
 
 portalRoutes.get('/stats', async (req: Request, res: Response) => {

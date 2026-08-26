@@ -23,6 +23,7 @@
     "db:check": "tsx scripts/checkDatabase.ts",
     "orders:link": "tsx scripts/linkGuestOrders.ts",
     "routes": "tsx scripts/listRoutes.ts",
+    "thread:check": "tsx scripts/checkOrderThread.ts",
     "models:generate": "tsx scripts/generateModels.ts",
     "prepare": "husky || true",
     "db:countries": "tsx scripts/checkCountrySlugs.ts"

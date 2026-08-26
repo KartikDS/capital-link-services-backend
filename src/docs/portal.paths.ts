@@ -95,7 +95,24 @@ export const portalPaths = {
       // filtering it in SQL is not a parameter's worth of work; the portal does
       // it in the browser over the whole history instead.
       query: [...PAGING],
-      responses: { 200: okList('Your orders', 'orders', 'Order', true) },
+      responses: {
+        200: okObject('Your orders', {
+          orders: { type: 'array', items: { type: 'object' } },
+          pagination: { type: 'object' },
+          /**
+           * Stage counts over the whole account, not over the page.
+           *
+           * The portal's table filters and searches in the browser over the rows
+           * it holds, so it used to badge each stage with a count of the page --
+           * "All orders 500" on an account with more than 500, beside dashboard
+           * tiles that counted the newest 200 and therefore disagreed. These are
+           * counted over every order the client has, so a badge stays true
+           * whatever `perPage` the caller asked for, and can legitimately total
+           * more than `orders` contains.
+           */
+          counts: { type: 'object' },
+        }),
+      },
     }),
   },
 
