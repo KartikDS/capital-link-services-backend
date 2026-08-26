@@ -19,6 +19,7 @@ import {
   SERVICE_SLUG_TO_ORDER_TYPE,
 } from '../../domain/codes';
 import { toCommentView } from './orders.presenter';
+import { clientReference } from './orders.service';
 import type { ResolvedOrder } from './orders.service';
 
 /**
@@ -239,6 +240,22 @@ export interface CancellationResult {
 }
 
 /**
+ * The string the numeric note key is read out of.
+ *
+ * Not `clientReference`, deliberately. `tbl_order_notes.order_no` is an `int`
+ * that both order families' notes share, and `orders.service.comments` reads a
+ * `tbl_cls_order`'s notes back by the digits in that order's own `order_no`
+ * column — see `paymentKey`. So a note has to be filed under the same column the
+ * read uses, even where that column holds something the client is never shown. An
+ * order whose `order_no` carries no digits at all has no key either way, and the
+ * callers refuse rather than writing a row nothing will ever select.
+ */
+const noteKeySource = (resolved: ResolvedOrder): string =>
+  resolved.family === 'cls'
+    ? (clean(resolved.row.order_no) ?? String(resolved.row.id))
+    : String(resolved.row.order_no);
+
+/**
  * Cancels an order, as far as the schema allows.
  *
  * **Neither order table has a cancelled state.** `tbl_cls_order.status` is
@@ -265,10 +282,7 @@ export const cancelOrder = async (
   reason: string | null,
   requestedBy: number
 ): Promise<CancellationResult> => {
-  const reference =
-    resolved.family === 'cls'
-      ? (clean(resolved.row.order_no) ?? String(resolved.row.id))
-      : String(resolved.row.order_no);
+  const reference = clientReference(resolved);
 
   if (resolved.family === 'legacy') {
     if (resolved.row.status === LEGACY_ORDER_STATUS.COMPLETED) {
@@ -297,10 +311,13 @@ export const cancelOrder = async (
     throw conflict('That order is already complete, so it cannot be cancelled.');
   }
 
-  // Recorded as a note against the numeric part of the reference, which is the
-  // only key `tbl_order_notes` can be written with.
+  // Recorded as a note against the numeric key `tbl_order_notes` joins on, which
+  // is read out of the row rather than off the reference above: the reference is
+  // what the client is answered with, and `orders.service.comments` reads these
+  // notes back by the digits in `order_no`. Deriving the key from anything else
+  // would file the note where that read cannot find it.
   const numeric = Number.parseInt(
-    /(\d+)$/.exec(reference)?.[1] ?? '',
+    /(\d+)$/.exec(noteKeySource(resolved))?.[1] ?? '',
     10
   );
 
@@ -399,23 +416,24 @@ export const addClientComment = async (
   }
 
   /**
-   * The reference this note is filed under.
+   * The reference this note is filed under, and the key it is stored against.
    *
-   * `tbl_order_notes.order_no` is an `int` and a `tbl_cls_order` reference is
-   * text, so the digits are the only key the two families' notes can share — the
-   * same rule `orders.service.comments` reads them back by. An order whose
-   * reference has no digits in it cannot be commented on, and that is refused
-   * rather than written somewhere it would never be found.
+   * They are not the same thing. The client is answered with the reference the
+   * order itself is presented under — `clientReference`, which the website
+   * matches this note against when it draws the order's thread. The row goes in
+   * under the digits: `tbl_order_notes.order_no` is an `int` and a
+   * `tbl_cls_order` reference is text, so the trailing number is the only key the
+   * two families' notes can share — the same rule `orders.service.comments` reads
+   * them back by. An order whose reference has no digits in it cannot be
+   * commented on, and that is refused rather than written somewhere it would
+   * never be found.
    */
-  const reference =
-    resolved.family === 'cls'
-      ? (clean(resolved.row.order_no) ?? String(resolved.row.id))
-      : String(resolved.row.order_no);
+  const reference = clientReference(resolved);
 
   const numeric =
     resolved.family === 'legacy'
       ? resolved.row.order_no
-      : Number.parseInt(/(\d+)$/.exec(reference)?.[1] ?? '', 10);
+      : Number.parseInt(/(\d+)$/.exec(noteKeySource(resolved))?.[1] ?? '', 10);
 
   if (!Number.isSafeInteger(numeric)) {
     throw badRequest(

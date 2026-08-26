@@ -4,12 +4,14 @@ import { clean, fullName } from '../../shared/text';
 import { Countries, OrderReturnDocumentDetails } from '../../models';
 import type { ClsOrder, Orders } from '../../models';
 import { materialiseChecklistQuietly } from '../../domain/checklist';
+import { orderReference } from '../../domain/orderReference';
 import * as repository from './orders.repository';
 import {
   buildTimeline,
   toCommentView,
   toDocumentView,
   toLegacyOrderView,
+  toLegalisationDocumentView,
   toOrderView,
   toPaymentView,
   toTrackedView,
@@ -116,6 +118,30 @@ const paymentKey = (resolved: ResolvedOrder): number | null => {
   const parsed = Number.parseInt(digits, 10);
   return Number.isSafeInteger(parsed) ? parsed : null;
 };
+
+/**
+ * The reference a client sees for a resolved order, in one place.
+ *
+ * The two families keep their reference in different shapes and only one of them
+ * is quotable. `tbl_orders.order_no` is a real reference number. `tbl_cls_order`
+ * has no reference of its own — this API writes the row's own id into `order_no`
+ * because CLS's admin keys on it (see `domain/orderReference`) — so reading that
+ * column back gives `'10034341'`, which is not what the order itself is
+ * presented as. `toOrderView` derives `CLS-10034341` from the id.
+ *
+ * Everything hung off an order used to build its reference inline from
+ * `order_no`, which meant an order and its own documents came back under two
+ * different references. The website filters an order's satellites by reference —
+ * reasonably, since a list endpoint can carry more than one order's rows — so a
+ * client's uploaded scans and their consultant's replies were fetched, returned,
+ * and then dropped on the floor by a string comparison that could never be true.
+ * The documents screen showed them because `portal.service` derived the reference
+ * from the id, as here.
+ */
+export const clientReference = (resolved: ResolvedOrder): string =>
+  resolved.family === 'cls'
+    ? orderReference(resolved.row.id)
+    : String(resolved.row.order_no);
 
 /** One order, with its consultant and payment reference filled in. */
 export const view = async (resolved: ResolvedOrder): Promise<OrderView> => {
@@ -236,10 +262,7 @@ export const comments = async (resolved: ResolvedOrder) => {
   const key = paymentKey(resolved);
   if (key === null) return [];
 
-  const reference =
-    resolved.family === 'cls'
-      ? (clean(resolved.row.order_no) ?? String(resolved.row.id))
-      : String(resolved.row.order_no);
+  const reference = clientReference(resolved);
 
   const notes = await repository.listClientVisibleNotes(key);
 
@@ -255,7 +278,7 @@ export const documents = async (resolved: ResolvedOrder) => {
     return [];
   }
 
-  const reference = clean(resolved.row.order_no) ?? String(resolved.row.id);
+  const reference = clientReference(resolved);
 
   /**
    * The checklist is derived here too, if it has not been already.
@@ -272,16 +295,40 @@ export const documents = async (resolved: ResolvedOrder) => {
    */
   await materialiseChecklistQuietly(resolved.row);
 
-  const [rows, notes] = await Promise.all([
+  /**
+   * Both tables an order's documents can be in.
+   *
+   * `tbl_cls_order_documents` holds uploads and the materialised checklist. A
+   * legalisation order's documents are somewhere else entirely: the attestation
+   * form collects them as declared lines in `tbl_order_dl_checklist` — "Birth
+   * Certificate Attestation ×1" — and `orders.writes.attachDocuments` fills a
+   * line's `doc_file` when the matching scan arrives rather than inserting a row
+   * beside it. So on an attestation order the uploaded documents *are* those
+   * lines, and reading only the first table showed the client an empty tab on an
+   * order they had sent four certificates for. Their documents screen listed
+   * them, because `portal.service` reads both.
+   *
+   * There is no double-counting between the two. `materialiseChecklist` needs a
+   * visa scope to write anything and an attestation order has none, so an order
+   * with declared lines has no materialised rows to duplicate them.
+   */
+  const [rows, notes, declared] = await Promise.all([
     repository.listClsDocuments(resolved.row.id),
     repository.listDocumentNotes(resolved.row.id),
+    repository.listOrderChecklist(resolved.row.id),
   ]);
 
   const noteFor = new Map(
     notes.map((note) => [note.order_document_id, note] as const)
   );
 
-  return rows.map((row) => toDocumentView(row, reference, noteFor.get(row.id) ?? null));
+  return [
+    ...rows.map((row) => toDocumentView(row, reference, noteFor.get(row.id) ?? null)),
+    // Last, and not interleaved: `tbl_order_dl_checklist` has no timestamps at
+    // all, so these carry a null `createdAt` and cannot be sorted against the
+    // dated rows. `portal.service.documents` orders them the same way.
+    ...declared.map((row) => toLegalisationDocumentView(row, reference)),
+  ];
 };
 
 /** Everything that has happened to an order, in order. */

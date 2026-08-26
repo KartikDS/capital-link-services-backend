@@ -5,6 +5,7 @@ import {
   ClsOrderDocuments,
   Countries,
   DocumentLegalizationOrderDetails,
+  OrderDlChecklist,
   OrderDlQuotes,
   OrderNotes,
   OrderTravellerDetails,
@@ -315,6 +316,21 @@ export const listDocumentNotes = (orderId: number): Promise<ClsOrderDocumentNote
   ClsOrderDocumentNotes.findAll({
     where: { order_id: orderId },
     order: [['created', 'DESC']],
+    limit: 200,
+  });
+
+/**
+ * The documents a legalisation order declared it was sending.
+ *
+ * `tbl_order_dl_checklist.order_no` holds the `tbl_cls_order.id` — see the note
+ * in `orders.lodge` — so this is keyed the same way the uploaded documents are,
+ * despite the column's name. No timestamp on the table, so its own id order is
+ * the only sequence it has.
+ */
+export const listOrderChecklist = (orderId: number): Promise<OrderDlChecklist[]> =>
+  OrderDlChecklist.findAll({
+    where: { order_no: orderId },
+    order: [['id', 'ASC']],
     limit: 200,
   });
 

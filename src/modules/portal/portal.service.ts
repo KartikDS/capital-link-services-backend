@@ -16,7 +16,10 @@ import { orderIdFromReference, orderReference } from '../../domain/orderReferenc
 import { toConsultantView } from '../../domain/company';
 import * as orders from '../orders/orders.service';
 import * as orderRepository from '../orders/orders.repository';
-import { toDocumentView } from '../orders/orders.presenter';
+import {
+  toDocumentView,
+  toLegalisationDocumentView,
+} from '../orders/orders.presenter';
 import type { AddressInput } from '../../shared/validation';
 import * as present from './portal.presenter';
 
@@ -309,7 +312,7 @@ export const documents = async (
    * declared — so the reservation cannot swallow the list either.
    */
   const declared = legalisation.map((row) =>
-    present.toLegalisationDocumentView(
+    toLegalisationDocumentView(
       row,
       // `order_no` on the checklist table holds the `tbl_cls_order.id`.
       referenceOf.get(row.order_no ?? 0) ?? '—'
