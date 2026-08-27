@@ -475,9 +475,19 @@ export const toDestinationCommentView = (
   authorRole: clean(note.user_type)?.toLowerCase() === 'client' ? 'Client' : 'Consultant',
   postedAt: toIso(note.date_added),
   body: clean(note.note) ?? '',
-  // A staff working note rather than a message to the client. Compared against 1
-  // rather than tested for truthiness: null is the MyISAM default on rows written
-  // before the column existed, and those belong on the client-facing side.
+  /**
+   * A staff working note rather than a message to the client — and on a
+   * client-facing read this should never be set.
+   *
+   * `listClientVisibleDestinationNotes` filters the internal lane out before a
+   * row reaches this presenter, so the flag is a tripwire rather than a badge:
+   * if one ever does arrive, it arrives labelled, and the website drops it on
+   * exactly this key instead of rendering it as correspondence.
+   *
+   * Compared against 1 rather than tested for truthiness: null is the MyISAM
+   * default on rows written before the column existed, and those belong on the
+   * client-facing side.
+   */
   ...(note.is_admin === 1 ? { internal: true as const } : {}),
   // Only present when there is one, so a message without a file carries no empty
   // array for the website to test.

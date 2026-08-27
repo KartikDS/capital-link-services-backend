@@ -293,11 +293,14 @@ export const destinationIds = (resolved: ResolvedOrder): Promise<number[]> =>
  *
  * ## Which notes come back
  *
- * From the consultant thread, all of them — both `is_admin` lanes, marked rather
- * than filtered, since CLS asked for that on 2026-08-26. `listDestinationNotes`
- * has the reasoning and `toDestinationCommentView` sets the `internal` flag the
- * portal badges. From `tbl_order_notes`, still only the client-facing ones: its
- * `is_admin = 1` rows are the fee lines, not correspondence.
+ * From both tables, the client-facing lane only. `is_admin = 1` marks CLS's own
+ * working notes and they do not leave the firm: on `tbl_order_destination_notes`
+ * they are the "Admin comment" box — internal correspondence about the order —
+ * and on `tbl_order_notes` they are the chargeable "Notary / DFAT / $85" fee
+ * lines, which are reported as charges rather than as messages. The filters are
+ * in `listClientVisibleDestinationNotes` and `listClientVisibleNotes`; the first
+ * carries the history of a request that was granted on 2026-08-26 and withdrawn
+ * on 2026-08-27.
  *
  * ## Ordering
  *
@@ -313,7 +316,7 @@ export const comments = async (resolved: ResolvedOrder) => {
 
   const [orderNotes, destinationNotes] = await Promise.all([
     key === null ? Promise.resolve([]) : repository.listClientVisibleNotes(key),
-    destinationIds(resolved).then(repository.listDestinationNotes),
+    destinationIds(resolved).then(repository.listClientVisibleDestinationNotes),
   ]);
 
   return [
@@ -323,14 +326,12 @@ export const comments = async (resolved: ResolvedOrder) => {
 };
 
 /**
- * One attachment from the consultant thread, checked against this order.
+ * One attachment from the consultant thread, checked twice before it is served.
  *
- * The check is the point. A note id is a small integer from a MyISAM table with
- * no order column on it, so the only way to know an attachment belongs to the
- * caller's order is to confirm its `destination_id` is one of that order's
- * destinations — the order itself having already been resolved for the caller.
- * Without that, the route would serve any note's attachment to anyone who could
- * count.
+ * The checks are the point, and there are two of them: the note must be on the
+ * client-facing lane, and it must belong to this order. Each is explained where
+ * it is made. Together they are the difference between a download route and a
+ * way of reading any note's file by counting.
  *
  * Returns the bare stored filename; the route decides where to look for it.
  */
@@ -347,17 +348,32 @@ export const commentAttachment = async (
   if (!note) throw missing;
 
   /**
-   * Both lanes, because the thread now shows both.
+   * The client-facing lane only, because an internal note's attachment is as
+   * internal as its text.
    *
-   * This used to refuse a note with `is_admin = 1` on the reasoning that an
-   * internal note's attachment is as internal as its text. That reasoning still
-   * holds — it is just that CLS decided on 2026-08-26 the text is not internal
-   * either, so refusing here would have offered the client a file the thread had
-   * already listed and then 404'd on the click. See `listDestinationNotes`.
+   * `findDestinationNote` is a lookup by primary key with no lane clause on it —
+   * it has to be, since the caller only has an id — so this is where the lane is
+   * enforced for the download route. Without it a client who guessed a note id
+   * would be served the file a consultant attached to a working note, and the
+   * thread filter above would have been the only thing standing between them and
+   * it.
    *
-   * The ownership check below is untouched, and it is the one that matters.
+   * Between 2026-08-26 and 2026-08-27 this check was dropped, on the reasoning
+   * that the thread listed the note so it had to serve the file. The thread no
+   * longer lists it. See `listClientVisibleDestinationNotes`.
+   *
+   * Refused as "not found", not as "forbidden": the answer must not tell the
+   * caller that a note they cannot read exists.
    */
+  if (note.is_admin === 1) throw missing;
 
+  /**
+   * The ownership check, which is the other half.
+   *
+   * A note id is a small integer from a MyISAM table with no order column on it,
+   * so the only way to know an attachment belongs to the caller's order is to
+   * confirm its `destination_id` is one of that order's destinations.
+   */
   const ids = await destinationIds(resolved);
   if (note.destination_id === null || !ids.includes(note.destination_id)) {
     // Same wording as a note that does not exist: this must not become a way of
@@ -449,7 +465,7 @@ export const timeline = async (
 
   const [notes, destinationNotes, payments] = await Promise.all([
     key === null ? Promise.resolve([]) : repository.listClientVisibleNotes(key),
-    destinationIds(resolved).then(repository.listDestinationNotes),
+    destinationIds(resolved).then(repository.listClientVisibleDestinationNotes),
     key === null ? Promise.resolve([]) : repository.listPayments(key),
   ]);
 

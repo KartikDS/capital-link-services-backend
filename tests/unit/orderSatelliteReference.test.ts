@@ -23,7 +23,7 @@ const listOrderChecklist = jest.fn();
 const listClientVisibleNotes = jest.fn();
 const listClsDestinationIds = jest.fn();
 const listLegacyDestinationIds = jest.fn();
-const listDestinationNotes = jest.fn();
+const listClientVisibleDestinationNotes = jest.fn();
 
 jest.mock('../../src/modules/orders/orders.repository', () => ({
   listClsDocuments,
@@ -32,7 +32,7 @@ jest.mock('../../src/modules/orders/orders.repository', () => ({
   listClientVisibleNotes,
   listClsDestinationIds,
   listLegacyDestinationIds,
-  listDestinationNotes,
+  listClientVisibleDestinationNotes,
 }));
 
 jest.mock('../../src/domain/checklist', () => ({
@@ -84,7 +84,7 @@ beforeEach(() => {
   ]);
   listClsDestinationIds.mockResolvedValue([]);
   listLegacyDestinationIds.mockResolvedValue([]);
-  listDestinationNotes.mockResolvedValue([]);
+  listClientVisibleDestinationNotes.mockResolvedValue([]);
 });
 
 describe('clientReference', () => {
@@ -160,7 +160,7 @@ describe('an order’s notes', () => {
     // order exactly as the documents' is.
     listClientVisibleNotes.mockResolvedValue([]);
     listClsDestinationIds.mockResolvedValue([77]);
-    listDestinationNotes.mockResolvedValue([
+    listClientVisibleDestinationNotes.mockResolvedValue([
       {
         id: 3,
         note: 'Please send the original certificate.',
@@ -191,6 +191,6 @@ describe('an order’s notes', () => {
 
     // Every destination, because the admin renders one comment box per
     // destination and the client has one conversation about the order.
-    expect(listDestinationNotes).toHaveBeenCalledWith([77, 78]);
+    expect(listClientVisibleDestinationNotes).toHaveBeenCalledWith([77, 78]);
   });
 });

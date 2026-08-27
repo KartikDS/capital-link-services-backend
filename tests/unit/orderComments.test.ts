@@ -17,11 +17,13 @@
  * thing on each, despite the admin's labels: 0 is the box CLS writes *to* the
  * client from, 1 is the staff working note beside it. A client's own reply is
  * written as 0 — it is addressed to CLS, so filing it as a staff note would put
- * a client's words in the lane the portal badges as CLS's own.
+ * a client's words in the lane CLS keeps for itself.
  *
- * On the read, both lanes now come back and the flag is a label rather than a
- * filter. That changed on 2026-08-26 at CLS's request, and the reason is in
- * `listDestinationNotes`; the write is unaffected either way.
+ * On the read, only the client-facing lane comes back: the internal one is CLS's
+ * confidential working record and it does not reach the portal. See
+ * `listClientVisibleDestinationNotes` for the two reversals that clause has been
+ * through. The write is unaffected either way — a client's reply is lane 0
+ * whichever way the read is filtered.
  *
  * The model layer is mocked rather than exercised: every assertion here is about
  * the row handed to `create`, which is decided before any query runs.
@@ -62,7 +64,7 @@ jest.mock('../../src/models', () => ({
 
 import { Op } from 'sequelize';
 import { addClientComment } from '../../src/modules/orders/orders.writes';
-import { listDestinationNotes } from '../../src/modules/orders/orders.repository';
+import { listClientVisibleDestinationNotes } from '../../src/modules/orders/orders.repository';
 import { toDestinationCommentView } from '../../src/modules/orders/orders.presenter';
 import type { ResolvedOrder } from '../../src/modules/orders/orders.service';
 
@@ -281,39 +283,41 @@ describe('addClientComment — the fallback', () => {
   });
 });
 
-describe('listDestinationNotes', () => {
+describe('listClientVisibleDestinationNotes', () => {
   /**
-   * The whole thread, both lanes — and the flag carried through rather than
-   * filtered on.
+   * The client-facing lane, and nothing else.
    *
-   * This asserted the opposite until 2026-08-26: `is_admin = 1` was withheld as
-   * CLS's private working notes. CLS asked for it to be shown instead, because
-   * the admin's labels send staff to the wrong box — "Admin comment" is the one
-   * that *sounds* like the box an admin types in — and every note filed there
-   * reached nobody. Order 10034012's entire history sat in that lane while the
-   * client's portal said "No messages yet".
+   * This assertion has now been written three ways, which is why it is worth
+   * being precise about what it is for. Originally the internal lane was
+   * withheld. On 2026-08-26 CLS asked for it to be shown instead — staff file
+   * most of their notes in the box labelled "Admin comment", so order 10034012's
+   * whole history sat in that lane while the client's portal said "No messages
+   * yet" — and the filter came out in favour of a badge. On 2026-08-27 CLS
+   * reversed that: those notes are confidential, and a badge does not make them
+   * less so.
    *
-   * What replaces the filter is the label: `toDestinationCommentView` sets
-   * `internal` from the same column and the portal badges it. The two are a pair,
-   * so the presenter's assertion below is the other half of this one.
+   * So the filter is back, and this test exists to keep it in. Whatever the
+   * reporting problem is, the answer is not to publish the internal lane.
    */
-  it('asks for every note on the thread, both lanes', async () => {
+  it('asks only for the notes on the client-facing lane', async () => {
     destinationNoteFindAll.mockResolvedValue([]);
 
-    await listDestinationNotes([77, 78]);
+    await listClientVisibleDestinationNotes([77, 78]);
 
     const [query] = destinationNoteFindAll.mock.calls[0];
 
     expect(query.where.destination_id).toEqual({ [Op.in]: [77, 78] });
-    // No `is_admin` condition at all, in any form. Asserted on the whole clause
-    // rather than on the absence of one key, so a filter reintroduced as an
-    // `Op.or`, an `Op.and` or a bare equality all fail this.
-    expect(Object.getOwnPropertySymbols(query.where)).toEqual([]);
-    expect(Object.keys(query.where)).toEqual(['destination_id']);
+    // Null as well as 0: null is the MyISAM default on rows written before the
+    // column existed, and those are ordinary correspondence rather than notes
+    // somebody deliberately filed as internal.
+    expect(query.where[Op.or]).toEqual([
+      { is_admin: { [Op.is]: null } },
+      { is_admin: 0 },
+    ]);
   });
 
   it('does not query at all for an order with no destinations', async () => {
-    await expect(listDestinationNotes([])).resolves.toEqual([]);
+    await expect(listClientVisibleDestinationNotes([])).resolves.toEqual([]);
 
     // `IN ()` is a syntax error, and there is nothing to ask for anyway.
     expect(destinationNoteFindAll).not.toHaveBeenCalled();
@@ -334,8 +338,9 @@ describe('toDestinationCommentView — which lane a note came from', () => {
     }) as unknown as Parameters<typeof toDestinationCommentView>[0];
 
   it('marks a note from the “Admin comment” box as internal', () => {
-    // The lane the portal badges "CLS team note". Without it a client reads
-    // "closed order ." as a message somebody wrote to them.
+    // The tripwire, not a badge: the read filters this lane out, so a flagged
+    // row reaching a client-facing response means the filter failed — and the
+    // website drops it on exactly this key rather than rendering it.
     expect(toDestinationCommentView(note(1), 'CLS-10034012')).toMatchObject({
       internal: true,
       authorRole: 'Consultant',
@@ -350,14 +355,6 @@ describe('toDestinationCommentView — which lane a note came from', () => {
         'internal'
       );
     }
-  });
-
-  it('offers an internal note’s attachment like any other', () => {
-    // The lane decides the badge, not whether the file is reachable — the
-    // download route dropped the same check for the same reason.
-    expect(toDestinationCommentView(note(1), 'CLS-1').attachments).toEqual([
-      { id: 'dn-23596', name: 'CLS Order Form Australia (005).pdf' },
-    ]);
   });
 });
 

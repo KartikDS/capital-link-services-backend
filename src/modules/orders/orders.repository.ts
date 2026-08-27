@@ -600,9 +600,9 @@ export const listLegacyDestinationIds = async (orderNo: number): Promise<number[
   ).map((row) => row.id);
 
 /**
- * The consultant thread on an order — every note on it, both lanes.
+ * The consultant thread on an order, as a client may read it.
  *
- * ## The two lanes, and why both are returned
+ * ## The two lanes, and which one leaves CLS
  *
  * `is_admin` means the opposite of what the admin's labels suggest, which is the
  * whole reason to read the Acme controller rather than the screenshot. The box
@@ -610,36 +610,50 @@ export const listLegacyDestinationIds = async (orderNo: number): Promise<number[
  * which `ViewOrderController` also emails them. The box labelled "Admin comment"
  * writes `is_admin = 1`: CLS's own working notes on the order.
  *
- * This used to return the first lane only, on the reasoning that a note written
- * for staff should not reach the client it is about. **CLS reversed that on
- * 2026-08-26 and asked for both.** The reason is the labels: staff reach for
- * "Admin comment" by its name — it is the box that *sounds* like the one an
- * admin types in — and everything they file there reaches nobody. Order 10034012
- * is the whole thread of a finished legalisation ("Signed CLS order form.",
- * "Notary done by Ashilpa Khanna.", "closed order .", two PDFs) sitting in that
- * lane while the client's portal said "No messages yet".
+ * **Only the first lane is returned.** An internal note is written on the
+ * assumption that nobody outside CLS will read it, and a portal that publishes it
+ * is not showing the client more of their order — it is disclosing the firm's
+ * private working record to the person it is about.
  *
- * So the lane is no longer a filter; it is a **label**. `toDestinationCommentView`
- * carries `is_admin = 1` through as `internal: true` and the portal badges it
- * "CLS team note", so a client can tell a working note from a message addressed
- * to them without either being hidden.
+ * ## The reversal, and why it is recorded here
  *
- * `tbl_order_notes` is a different matter and keeps its filter — see
- * `listClientVisibleNotes`. Its `is_admin = 1` rows are the chargeable "Notary /
- * DFAT / $85" lines the admin renders as a fee table, not correspondence, and
- * the portal shows those as charges rather than as messages.
+ * On 2026-08-26 this filter was removed at CLS's request: staff reach for the
+ * box by its label — "Admin comment" is the one that *sounds* like the box an
+ * admin types in — so most of what is ever written about an order lands in the
+ * internal lane, and orders such as 10034012 showed a client "No messages yet"
+ * through a whole finished legalisation. Marking the lane instead of hiding it
+ * looked like the way to give them that history back.
+ *
+ * **CLS reversed it again on 2026-08-27, and this is the position that stands.**
+ * A badge is a presentation choice; confidentiality is not something a client can
+ * be asked to read past. The visibility problem is real but it is CLS's to fix at
+ * the point of writing — a note meant for the client goes in the "Client comment"
+ * box — and no amount of labelling makes the other box safe to publish.
+ *
+ * So the lane is a filter again, and it is the only one that decides this: the
+ * presenter's `internal` flag and the website's own guard are there to catch a
+ * row that somehow gets past this clause, not to do the work of it.
+ *
+ * Nothing else reads this table. Admin surfaces both lanes from CLS's own admin,
+ * which queries MySQL directly, so a staff screen loses nothing to this filter.
  *
  * `is_deleted` has no counterpart here: this table has no such column, so a note
  * the admin "deletes" is genuinely gone (`deleteDestCommentAction` issues a
  * `DELETE`) and there is nothing to honour.
  */
-export const listDestinationNotes = (
+export const listClientVisibleDestinationNotes = (
   destinationIds: readonly number[]
 ): Promise<OrderDestinationNotes[]> =>
   destinationIds.length === 0
     ? Promise.resolve([])
     : OrderDestinationNotes.findAll({
-        where: { destination_id: { [Op.in]: [...destinationIds] } },
+        where: {
+          destination_id: { [Op.in]: [...destinationIds] },
+          // Null is the MyISAM default on rows written before the column
+          // existed; those predate the internal box and are ordinary
+          // correspondence, so they stay on the client-facing side.
+          [Op.or]: [{ is_admin: { [Op.is]: null } }, { is_admin: 0 }],
+        },
         order: [['date_added', 'DESC']],
         limit: 200,
       });

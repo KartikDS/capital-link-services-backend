@@ -797,8 +797,9 @@ referenceRoutes.post(
  *
  * The file a consultant attached to a message on this order. The comment id is
  * the prefixed one the thread returns — `dn-1841` — and `service.commentAttachment`
- * refuses any note that is not on one of this order's destinations, so a note id
- * alone is not enough to reach a file.
+ * refuses any note that is not on one of this order's destinations, and any note
+ * on CLS's internal lane, so a note id alone is not enough to reach a file and no
+ * id at all reaches a working note's.
  *
  * ## Where the bytes are looked for
  *
