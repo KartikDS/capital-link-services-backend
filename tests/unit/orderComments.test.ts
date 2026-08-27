@@ -322,6 +322,34 @@ describe('listClientVisibleDestinationNotes', () => {
     // `IN ()` is a syntax error, and there is nothing to ask for anyway.
     expect(destinationNoteFindAll).not.toHaveBeenCalled();
   });
+
+  /**
+   * The second sort key, which is not decoration.
+   *
+   * This is MyISAM with no index on `date_added`, so `ORDER BY date_added DESC`
+   * on its own is a filesort — and a filesort is entitled to return rows with
+   * equal keys in any order it likes, differently on each read. Equal keys are
+   * the norm on this table: `ViewOrderController` stamps every note one submit
+   * writes with a single `$datetime`, and its multi-file upload writes one row
+   * per file with that same timestamp repeated.
+   *
+   * `id` is the insertion sequence, so it is the only record the table keeps of
+   * which of two same-second notes was written first. Without it CLS saw
+   * comments that "do not appear in order of when the message was sent", and the
+   * `limit` below cut the list at an arbitrary place as well.
+   */
+  it('breaks a tie on the timestamp with the insertion order', async () => {
+    destinationNoteFindAll.mockResolvedValue([]);
+
+    await listClientVisibleDestinationNotes([77]);
+
+    const [query] = destinationNoteFindAll.mock.calls[0];
+
+    expect(query.order).toEqual([
+      ['date_added', 'DESC'],
+      ['id', 'DESC'],
+    ]);
+  });
 });
 
 describe('toDestinationCommentView — which lane a note came from', () => {

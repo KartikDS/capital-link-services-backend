@@ -523,6 +523,37 @@ export const listLegacyOrders = (
 // ---------------------------------------------------------------------------
 
 /**
+ * How every note table is read: newest first, and ties broken by `id`.
+ *
+ * The second key is the one that matters. Both note tables are MyISAM with no
+ * index on `date_added`, so `ORDER BY date_added DESC` alone is a filesort — and
+ * a filesort says nothing about rows whose key is equal. Equal keys are not a
+ * corner case here, they are the norm:
+ *
+ * - `ViewOrderController` builds one `$datetime` at the top of the action and
+ *   stamps every note that submit writes with it, so a "Client comment" and the
+ *   "Admin comment" typed beside it land on the same second.
+ * - The admin's multi-file upload writes **one row per file**, looping over
+ *   `$_FILES` and repeating the same text and the same `$datetime`.
+ *
+ * So a thread routinely holds runs of notes that `date_added` cannot separate,
+ * and without a tiebreaker MySQL was free to hand them back in a different order
+ * on any two reads — which is what CLS saw as comments that "do not appear in
+ * order of when the message was sent". `id` is the insertion sequence on an
+ * auto-increment column, so it is the only record these tables keep of which of
+ * two same-second notes was written first. It also makes the `limit` below cut
+ * at a defined place instead of an arbitrary one.
+ *
+ * The same rule, in the same direction, is what `orders.service.comments` merges
+ * the two tables by and what the website sorts the thread by. Three sorts, one
+ * order.
+ */
+const NOTE_ORDER: SequelizeOrder = [
+  ['date_added', 'DESC'],
+  ['id', 'DESC'],
+];
+
+/**
  * The notes on an order, as a client may read them.
  *
  * `is_admin` marks a note a consultant wrote for other staff. Those are
@@ -531,6 +562,9 @@ export const listLegacyOrders = (
  * the single worst thing this API could do.
  *
  * `is_deleted` is honoured for the same reason a soft delete exists.
+ *
+ * Ordered by `date_added` and then by `id`, and the second key is not
+ * decoration. See `NOTE_ORDER` below.
  */
 export const listClientVisibleNotes = (orderNo: number): Promise<OrderNotes[]> =>
   OrderNotes.findAll({
@@ -539,7 +573,7 @@ export const listClientVisibleNotes = (orderNo: number): Promise<OrderNotes[]> =
       is_deleted: 0,
       [Op.or]: [{ is_admin: { [Op.is]: null } }, { is_admin: 0 }],
     },
-    order: [['date_added', 'DESC']],
+    order: NOTE_ORDER,
     limit: 200,
   });
 
@@ -547,7 +581,7 @@ export const listClientVisibleNotes = (orderNo: number): Promise<OrderNotes[]> =
 export const listAllNotes = (orderNo: number): Promise<OrderNotes[]> =>
   OrderNotes.findAll({
     where: { order_no: orderNo, is_deleted: 0 },
-    order: [['date_added', 'DESC']],
+    order: NOTE_ORDER,
     limit: 500,
   });
 
@@ -654,7 +688,10 @@ export const listClientVisibleDestinationNotes = (
           // correspondence, so they stay on the client-facing side.
           [Op.or]: [{ is_admin: { [Op.is]: null } }, { is_admin: 0 }],
         },
-        order: [['date_added', 'DESC']],
+        // `date_added` then `id` — see `NOTE_ORDER`. This is the table the
+        // admin's multi-file upload writes a row at a time into, so it is the
+        // one where same-second runs are longest.
+        order: NOTE_ORDER,
         limit: 200,
       });
 

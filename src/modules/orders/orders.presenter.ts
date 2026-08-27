@@ -688,6 +688,45 @@ export interface TimelineNote {
   note: string | null;
 }
 
+/**
+ * What comes first when two entries carry the same timestamp.
+ *
+ * Ties are ordinary here, not exotic: an order is received and paid for in the
+ * same minute, and `ViewOrderController` stamps every note one submit writes with
+ * a single `$datetime`. Left alone they came back in whatever order the array
+ * happened to be built in, which changed with the data.
+ *
+ * The reading matches what happened: the order arrived, the money landed, CLS
+ * moved it along, and the notes about all of that were written last.
+ */
+const TIMELINE_TIE_ORDER: Record<TimelineEntry['kind'], number> = {
+  submitted: 0,
+  payment: 1,
+  milestone: 2,
+  note: 3,
+};
+
+/**
+ * Two same-second notes, in the order they were written.
+ *
+ * `note-12` is a `tbl_order_notes` row and `note-dn-12` a destination note;
+ * both tables auto-increment, so the id is the insertion sequence within a table
+ * and the prefix separates the two. Anything else sorts last rather than
+ * unpredictably — see `commentSequence` in `orders.service`, which is the same
+ * rule for the same reason.
+ */
+const compareTimelineNotes = (left: string, right: string): number => {
+  const sequence = (id: string): readonly [number, number] => {
+    const match = /^note-(dn-)?(\d+)$/.exec(id);
+    return match ? [match[1] ? 1 : 0, Number(match[2])] : [2, 0];
+  };
+
+  const [leftTable, leftId] = sequence(left);
+  const [rightTable, rightId] = sequence(right);
+
+  return leftTable - rightTable || leftId - rightId;
+};
+
 export const buildTimeline = (
   order: OrderView,
   milestoneDates: readonly (string | null)[],
@@ -739,7 +778,12 @@ export const buildTimeline = (
     });
   }
 
-  return entries.sort((left, right) => left.at.localeCompare(right.at));
+  return entries.sort(
+    (left, right) =>
+      left.at.localeCompare(right.at) ||
+      TIMELINE_TIE_ORDER[left.kind] - TIMELINE_TIE_ORDER[right.kind] ||
+      compareTimelineNotes(left.id, right.id)
+  );
 };
 
 // ---------------------------------------------------------------------------

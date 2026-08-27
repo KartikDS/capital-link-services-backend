@@ -269,6 +269,60 @@ export const destinationIds = (resolved: ResolvedOrder): Promise<number[]> =>
     : repository.listLegacyDestinationIds(resolved.row.order_no);
 
 /**
+ * Where a comment sits in its table's insertion order: `[table, id]`.
+ *
+ * The presenters hand out `12` for a `tbl_order_notes` row and `dn-12` for a
+ * `tbl_order_destination_notes` one, precisely because both tables
+ * auto-increment from 1 and a bare id would collide. That makes the id useless
+ * as a number on its own and perfectly good as a pair: notes from the same table
+ * compare by id, which is the only record either table keeps of which of two
+ * same-second notes was written first, and notes from different tables fall back
+ * to a fixed rank so the answer is at least always the same one.
+ *
+ * An id in neither shape ranks last. Nothing produces one today; it is here so
+ * an unrecognised id cannot make the comparator return something inconsistent
+ * and corrupt the whole sort.
+ */
+const commentSequence = (id: string): readonly [number, number] => {
+  const match = /^(dn-)?(\d+)$/.exec(id);
+  return match ? [match[1] ? 1 : 0, Number(match[2])] : [2, 0];
+};
+
+/**
+ * The thread's order: newest first, undated last, ties by insertion.
+ *
+ * Three clauses, and each answers a real property of these tables.
+ *
+ * `postedAt` is an ISO instant from `toIso`, always the same width, so comparing
+ * the strings is comparing the moments.
+ *
+ * A null `postedAt` is a note whose `date_added` was blank or MySQL's zero date.
+ * It sorts last in every direction rather than being treated as the beginning of
+ * time — an undated note at the head of a thread reads as the first thing anyone
+ * said about the order, which is the one thing it definitely is not.
+ *
+ * Ties then go to `commentSequence`, reversed with the rest so this stays the
+ * exact mirror of the oldest-first sort the website draws the thread with. Two
+ * screens disagreeing about which of two same-second notes came first is the
+ * same bug as no sort at all.
+ */
+const newestFirst = (
+  left: { id: string; postedAt: string | null },
+  right: { id: string; postedAt: string | null }
+): number => {
+  if (left.postedAt === null || right.postedAt === null) {
+    if (left.postedAt !== right.postedAt) return left.postedAt === null ? 1 : -1;
+  } else if (left.postedAt !== right.postedAt) {
+    return right.postedAt.localeCompare(left.postedAt);
+  }
+
+  const [leftTable, leftId] = commentSequence(left.id);
+  const [rightTable, rightId] = commentSequence(right.id);
+
+  return rightTable - leftTable || rightId - leftId;
+};
+
+/**
  * The notes on an order, as the client may read them — both tables, one thread.
  *
  * ## Why two tables
@@ -309,6 +363,10 @@ export const destinationIds = (resolved: ResolvedOrder): Promise<number[]> =>
  * because a consultant's reply and a client's question have to interleave to read
  * as a conversation. A note whose `date_added` will not parse sorts last rather
  * than being dropped — it is still a message somebody sent.
+ *
+ * Ties are broken by `commentSequence` rather than left to the merge, because
+ * they are common and they were what CLS saw as a thread out of order — see
+ * `NOTE_ORDER` in the repository for why so many notes share a second.
  */
 export const comments = async (resolved: ResolvedOrder) => {
   const reference = clientReference(resolved);
@@ -322,7 +380,7 @@ export const comments = async (resolved: ResolvedOrder) => {
   return [
     ...orderNotes.map((note) => toCommentView(note, reference)),
     ...destinationNotes.map((note) => toDestinationCommentView(note, reference)),
-  ].sort((left, right) => (right.postedAt ?? '').localeCompare(left.postedAt ?? ''));
+  ].sort(newestFirst);
 };
 
 /**
