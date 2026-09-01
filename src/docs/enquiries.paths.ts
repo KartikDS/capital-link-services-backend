@@ -57,7 +57,7 @@ export const enquiryPaths = {
       tag,
       summary: 'The visa Apply Now card',
       description:
-        'The card’s four catalogue answers plus the applicant’s contact details. The destination and nationality arrive as text rather than as `tbl_countries` ids: an enquiry is not an order, nothing joins on them, and a consultant reading "Destination: Saudi Arabia" needs no id.',
+        'The card’s four catalogue answers plus the applicant’s contact details. The destination and nationality arrive as text rather than as `tbl_countries` ids: an enquiry is not an order, nothing joins on them, and a consultant reading "Destination: Saudi Arabia" needs no id.\n\n`heardAboutUs` is the referral answer the card now asks for, already resolved to a label ("Google Search", not "google-search"), and is folded into `query` alongside the destination and visa type.',
       body: {
         schema: body(
           {
@@ -66,6 +66,7 @@ export const enquiryPaths = {
             destination: f.string(),
             nationality: f.string(),
             visaType: f.string(),
+            heardAboutUs: f.string(),
           },
           ['name', 'email']
         ),

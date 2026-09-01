@@ -19,6 +19,16 @@ import { logger } from '../../shared/logger';
  * Five forms on the website — general contact, visa, translation, corporate and
  * a call-back request — and two tables to hold them.
  *
+ * **"How did you hear about us?"** is asked by all three of the website's enquiry
+ * forms and has no column on either table. The visa card sends it as
+ * `heardAboutUs` and it is folded into `query` with everything else this schema
+ * has no room for; the general form folds it into its own `message` before it
+ * gets here, which is why only one route names it. `tbl_translation_services` has
+ * no free-text column to fold anything into — its only one is `document_name`,
+ * which the admin queue renders as the document — so the translation form's
+ * answer travels in the email to the help inbox and stops there until that table
+ * gains a column.
+ *
  * `tbl_inquiries` takes four of the five. It has `name`, `email`, `phone`,
  * `subject` and `query`, which is enough for any of them: the form's own name
  * goes in `subject` so the queue can be filtered by which form it came from, and
@@ -142,6 +152,15 @@ const visaEnquirySchema = baseEnquirySchema.extend({
   departureDate: z.string().trim().max(64).optional().nullable(),
   travellers: z.coerce.number().int().min(1).max(100).optional().nullable(),
   company: z.string().trim().max(255).optional().nullable(),
+  /**
+   * How the applicant found CLS, already resolved to a label by the website.
+   *
+   * Optional here although the card requires it, because this schema's job is to
+   * decide whether an enquiry can be stored, not to re-run the form's rules — and
+   * an enquiry refused over marketing attribution is an enquiry lost for the one
+   * field on the card no consultant needs.
+   */
+  heardAboutUs: z.string().trim().max(255).optional().nullable(),
 });
 
 /** POST /api/enquiries/visa */
@@ -164,6 +183,7 @@ enquiryRoutes.post(
         departureDate: body.departureDate,
         travellers: body.travellers,
         company: body.company,
+        heardAboutUs: body.heardAboutUs,
       }),
     });
 
