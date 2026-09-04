@@ -16,6 +16,9 @@ import { PAGING, body, f, okList, okObject, operation } from './shared';
 
 const tag = 'Enquiries';
 
+/** A paragraph break in a description, spelled as `orders.paths` spells it. */
+const NL = '\n';
+
 /** The columns every intake form fills. */
 const baseFields = {
   name: f.string(),
@@ -80,8 +83,21 @@ export const enquiryPaths = {
       tag,
       summary: 'The NAATI translation form',
       description:
-        'Its own table, because the request is structured. Note the shorter column widths — `varchar(225)` here against `varchar(255)` on `tbl_inquiries` — which is why this schema is separate rather than reusing the base one.\n\n`tbl_translation_services` has no message column. A free-text note is appended to `document_name` only if it fits; otherwise it is reported as not stored in `warning`, because truncating a client’s note halfway through a sentence is worse than telling them to send it by email.',
+        'Its own table, because the request is structured. Note the shorter column widths — `varchar(225)` here against `varchar(255)` on `tbl_inquiries` — which is why this schema is separate rather than reusing the base one.' +
+        NL +
+        NL +
+        '**Two content types.** `multipart/form-data` when the client attached documents, `application/json` when they did not — multer only touches a multipart body and passes anything else through to `express.json()`, so the scalar fields are read the same way either way.' +
+        NL +
+        NL +
+        '**Where the files end up:** `service_translation/` in the S3 bucket *and* under `UPLOAD_DIR`, with the stored filenames written to `document_name` as a comma-separated list. That column is a `varchar(225)` and is the only place this table has for a document — there is no join table and this API issues no DDL — so the cap on how many may be attached is derived from the column width in `domain/translationDocuments` rather than chosen. A file beyond it is discarded rather than left unreferenced in the bucket, and reported in `warning`.' +
+        NL +
+        NL +
+        'The value is a **bare filename**, because that is what CLS’s own admin reads: its translation queue links each row to `?filename=`, resolved against a fixed directory. A one-document enquiry therefore produces exactly the shape that admin already handles.' +
+        NL +
+        NL +
+        '`tbl_translation_services` has no message column, so a note and a document compete for the same one. With nothing attached a short note is appended to the document name if it fits; with files attached the filenames win, because a name that does not resolve is a document nobody can open. Either way a note that could not be stored is reported in `warning` rather than truncated mid-sentence.',
       body: {
+        contentType: 'multipart/form-data',
         schema: body(
           {
             name: f.string(),
@@ -89,13 +105,49 @@ export const enquiryPaths = {
             phone: f.string(),
             languageFrom: f.string(),
             languageTo: f.string(),
-            documentName: f.string(),
-            message: f.string('Appended to the document name if it fits.'),
+            documentName: f.string(
+              'What the client says they are sending. Recorded only when no file is attached — the stored filenames take the column otherwise.'
+            ),
+            message: f.string(
+              'Appended to the document name if it fits, and only when no file is attached.'
+            ),
+            documents: {
+              type: 'array',
+              items: { type: 'string', format: 'binary' },
+              description:
+                'The documents to be translated. Extension and MIME type must agree; see `GET /api/config/public` for the accepted list and the size limit.',
+            },
           },
           ['name', 'email', 'languageFrom', 'languageTo']
         ),
       },
-      responses: { 201: persisted, 503: { $ref: '#/components/responses/ReadOnly' } },
+      responses: {
+        201: okObject('Recorded', {
+          enquiry: { $ref: '#/components/schemas/Enquiry' },
+          documents: {
+            type: 'array',
+            description:
+              'One entry per stored document, in the order they were attached. `storedAs` is the filename written to `document_name`; `storedIn` says which of the bucket and the local disk took the bytes.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                storedAs: { type: 'string', nullable: true },
+                storedIn: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+          message: { type: 'string' },
+          warning: {
+            type: 'string',
+            description:
+              'Set when a note, or a document, had nowhere in the column to be recorded.',
+          },
+        }),
+        413: { description: 'A document is larger than the configured limit' },
+        415: { description: 'That extension is not accepted' },
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
     }),
   },
 

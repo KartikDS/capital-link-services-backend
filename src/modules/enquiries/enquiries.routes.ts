@@ -1,11 +1,27 @@
 import { Op } from 'sequelize';
-import { Router, type Request, type Response } from 'express';
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type Response,
+} from 'express';
 import { z } from 'zod';
 import { Inquiries, TranslationServices } from '../../models';
 import { requireAdmin } from '../../middleware/authenticate';
+import { translationEnquiryFiles } from '../../middleware/upload';
+import { markInternal } from '../../middleware/requestContext';
 import { authenticate } from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
-import { notFound } from '../../shared/errors';
+import {
+  chooseTranslationColumn,
+  packTranslationDocumentNames,
+  translationDocumentPath,
+} from '../../domain/translationDocuments';
+import {
+  discardDocument,
+  storedPathOf,
+} from '../../shared/storage/documents';
+import { forbidden, notFound } from '../../shared/errors';
 import { created, message, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
@@ -205,58 +221,220 @@ const translationEnquirySchema = z.object({
 });
 
 /**
+ * Refuses a multipart translation enquiry from a caller with no secret.
+ *
+ * Ordered **before** `translationEnquiryFiles` deliberately. Checking after it
+ * would mean every refused request had already written its files to the bucket
+ * and the disk, leaving the guard to delete what it should never have accepted
+ * — and leaving an attacker a way to spend the storage anyway.
+ *
+ * The content type is what it reads, because that is all there is to read at
+ * this point: the body has not been parsed, so there is no `req.files` yet. A
+ * multipart body with no files in it is refused too, which costs nothing — the
+ * form only sends one when it has documents to send.
+ *
+ * The public, file-less shape is untouched. Anyone may still lodge a translation
+ * enquiry as JSON, which is what this form has always been.
+ */
+const documentsNeedInternal = (
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): void => {
+  const contentType = req.headers['content-type'] ?? '';
+
+  if (contentType.includes('multipart/form-data') && !req.internal) {
+    logger.warn(
+      'A translation enquiry tried to attach documents without the internal secret'
+    );
+    next(
+      forbidden(
+        'Documents cannot be attached to an enquiry sent directly to this API. Use the website form.'
+      )
+    );
+    return;
+  }
+
+  next();
+};
+
+/**
+ * The bare filename a stored translation document is recorded under.
+ *
+ * `storedPathOf` answers with the path relative to the upload root —
+ * `service_translation/mfk2p3x1-a3f2c1-passport.pdf` — and the column holds only
+ * the last segment, because CLS's admin download supplies the directory itself.
+ * See `domain/translationDocuments` for why the two halves are split that way.
+ */
+const storedFilenameOf = (file: Express.Multer.File): string => {
+  const stored = storedPathOf(file);
+
+  return stored.slice(stored.lastIndexOf('/') + 1);
+};
+
+/**
+ * Throws away translation documents nothing will ever reference.
+ *
+ * Two callers, one meaning: bytes are on disk and in the bucket, and the column
+ * entry that would have named them was never written. Sequential rather than
+ * `Promise.all` because this runs on a failure path where the count is at most
+ * five and the log order is worth more than the millisecond.
+ */
+const discardTranslationDocuments = async (
+  names: readonly string[]
+): Promise<void> => {
+  for (const name of names) {
+    await discardDocument(translationDocumentPath(name));
+  }
+};
+
+/**
  * POST /api/enquiries/translation
  *
  * Its own table, because the request is structured. Note the shorter column
  * widths — `varchar(225)` here against `varchar(255)` on `tbl_inquiries` — which
  * is why this schema is separate rather than reusing the base one.
  *
- * `tbl_translation_services` has no message column. A free-text note is appended
- * to `document_name` only if it fits; otherwise it is reported as not stored,
- * because truncating a client's note halfway through a sentence is worse than
- * telling them to send it by email.
+ * ## Two content types, one route
+ *
+ * `application/json` when the client attached nothing, `multipart/form-data` when
+ * they did. Multer only touches a multipart body and calls `next()` on anything
+ * else, so `express.json()` still parses the first and the fields land on
+ * `req.body` either way.
+ *
+ * `translationEnquiryFiles` runs **before** `validate`, because the scalar fields
+ * of a multipart request are parsed by multer and there is nothing on `req.body`
+ * until it has. This is the same ordering, for the same reason, as
+ * `POST /api/orders/documents`.
+ *
+ * ## The documents, and the one column they have
+ *
+ * The bytes go to `service_translation/` in the S3 bucket and under
+ * `UPLOAD_DIR` — `saveDocument` writes both — and the stored filenames go into
+ * `document_name` as a comma-separated list. That column is the only place this
+ * table has for a document, so `domain/translationDocuments` owns the format and
+ * the cap derived from its width. Before this, the website collected these files
+ * in the browser and dropped them: a client who attached a birth certificate got
+ * a consultant emailing the next day to ask for it.
+ *
+ * ## Why a note and a document compete for the same column
+ *
+ * Because they are the same `varchar(225)`. With no files attached the old
+ * behaviour stands — a short note is appended to the document name if it fits.
+ * With files attached the filenames win, because a name that does not resolve is
+ * a document nobody can open, while a note has an inbox to arrive in. Either way
+ * a note that could not be stored comes back as a `warning` rather than being
+ * silently truncated mid-sentence.
  */
 enquiryRoutes.post(
   '/translation',
   limits.enquiry,
+  markInternal,
+  documentsNeedInternal,
+  translationEnquiryFiles,
   validate(translationEnquirySchema),
   async (req: Request, res: Response) => {
     const body = req.body as z.infer<typeof translationEnquirySchema>;
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     const now = toLegacyDateTime();
 
     const documentName = clean(body.documentName);
     const note = clean(body.message);
 
-    // 225 is the column. Only combine when the result actually fits.
-    const combined =
-      documentName && note && `${documentName} — ${note}`.length <= 225
-        ? `${documentName} — ${note}`
-        : documentName;
+    /**
+     * Kept beside the files rather than recomputed, because `documents` in the
+     * response has to pair each file with its own stored name and packing is
+     * greedy: a short name after a long one is kept while the long one is
+     * dropped, so the two lists are not index-aligned.
+     */
+    const filenames = files.map(storedFilenameOf);
+    const packed = packTranslationDocumentNames(filenames);
+    const kept = new Set(packed.stored);
 
-    const row = await TranslationServices.create({
-      full_name: body.name,
-      email: body.email,
-      phone: clean(body.phone),
-      language_from: body.languageFrom,
-      language_to: body.languageTo,
-      document_name: combined,
-      created: now,
-      updated: now,
+    /**
+     * What the one column ends up holding, and whether the note is in it.
+     *
+     * The filenames when there are files, and otherwise the old text shape — so
+     * an enquiry with nothing attached still records what the client said they
+     * were sending. `domain/translationDocuments` owns the priority and the
+     * arithmetic; this route only reports the outcome.
+     */
+    const column = chooseTranslationColumn({
+      documents: packed.value,
+      documentName,
+      note,
     });
 
-    logger.info('Translation enquiry received', { enquiryId: row.id });
+    let row: TranslationServices;
 
-    const noteStored = combined !== documentName;
+    try {
+      row = await TranslationServices.create({
+        full_name: body.name,
+        email: body.email,
+        phone: clean(body.phone),
+        language_from: body.languageFrom,
+        language_to: body.languageTo,
+        document_name: column.value,
+        created: now,
+        updated: now,
+      });
+    } catch (error) {
+      /**
+       * The bytes are already written, and the row that would have referenced
+       * them does not exist — so nothing will ever find them again. Removed
+       * before the error goes up, because the alternative is a bucket that
+       * accumulates one unreferenced passport scan per failed insert.
+       */
+      await discardTranslationDocuments([...packed.stored, ...packed.dropped]);
+      throw error;
+    }
+
+    /**
+     * Stored, but with nowhere in the column to be named — so equally
+     * unreachable. Only possible when this endpoint is called directly with more
+     * files than the form's own picker allows.
+     */
+    await discardTranslationDocuments(packed.dropped);
+
+    logger.info('Translation enquiry received', {
+      enquiryId: row.id,
+      documents: packed.stored.length,
+      dropped: packed.dropped.length,
+    });
+
+    const noteLost = Boolean(note) && !column.noteStored;
 
     created(res, {
       enquiry: { id: String(row.id), reference: `TRN-${row.id}` },
+      documents: files.flatMap((file, index) => {
+        const filename = filenames[index];
+
+        // Dropped for want of room in the column, so not reported as stored.
+        if (!filename || !kept.has(filename)) return [];
+
+        return [
+          {
+            // What the client called it, echoed back but not stored — the
+            // column has no room for an original name beside the stored one.
+            name: file.originalname,
+            storedAs: filename,
+            storedIn: file.storedIn ?? [],
+          },
+        ];
+      }),
       message: 'Thank you — a NAATI translator will be in touch with a quote.',
-      ...(note && !noteStored
+      ...(packed.dropped.length > 0
         ? {
-            warning:
-              'Your note was too long to store against this enquiry. Please email it to us so it reaches your translator.',
+            warning: `We could only attach ${packed.stored.length} of your ${
+              packed.stored.length + packed.dropped.length
+            } documents to this enquiry. Please email the rest to us so they reach your translator.`,
           }
-        : {}),
+        : noteLost
+          ? {
+              warning:
+                'Your note was too long to store against this enquiry. Please email it to us so it reaches your translator.',
+            }
+          : {}),
     });
   }
 );

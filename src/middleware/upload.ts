@@ -8,6 +8,11 @@ import {
   contentTypeFor,
   mediaTypesFor,
 } from '../domain/documentFormats';
+import {
+  MAX_TRANSLATION_DOCUMENTS,
+  TRANSLATION_DOCUMENT_DIR,
+  TRANSLATION_SLUG_MAX,
+} from '../domain/translationDocuments';
 import { discardDocument, saveDocument } from '../shared/storage/documents';
 import { badRequest } from '../shared/errors';
 
@@ -92,6 +97,37 @@ export const storedName = (originalName: string): string => {
 };
 
 /**
+ * A stored name for a translation enquiry's document — the same guarantees, in
+ * fewer characters.
+ *
+ * `storedName` spends 25 characters on a decimal millisecond timestamp and a
+ * twelve-character nonce before it gets to the slug, which is free when the value
+ * has a `varchar(255)` row to itself. A translation enquiry has one
+ * `varchar(225)` for **every** document on it, so the same budget has to cover
+ * five names and their separators — see `domain/translationDocuments` for the
+ * arithmetic that fixes the cap.
+ *
+ * Base-36 milliseconds and three random bytes get the prefix from 25 characters
+ * to 14 while keeping what the prefix is for: ordering by time, and uniqueness
+ * that does not depend on anything the browser said. Three bytes is 16.7 million
+ * values within a single millisecond, against the five files one request can
+ * carry.
+ */
+export const translationStoredName = (originalName: string): string => {
+  const extension = path.extname(originalName).toLowerCase();
+  const stamp = Date.now().toString(36);
+  const nonce = crypto.randomBytes(3).toString('hex');
+
+  // Re-stripped after the cut: slicing `birth-certificate-long` to 20 can land
+  // on a dash, and a trailing one would read as a missing name segment.
+  const slug = slugForPath(originalName)
+    .slice(0, TRANSLATION_SLUG_MAX)
+    .replace(/-+$/g, '');
+
+  return `${stamp}-${nonce}${slug ? `-${slug}` : ''}${extension}`;
+};
+
+/**
  * The directory segment a request's uploads belong under.
  *
  * One per client, so neither a bucket listing nor a directory listing puts every
@@ -122,14 +158,31 @@ const directoryFor = (req: Request): string => {
  * abort path only cleans up an in-flight file that has a `path` on it — see
  * `_removeFile`.
  */
+/** What a `DocumentStorage` may be told to do differently. */
+interface DocumentStorageOptions {
+  /**
+   * The directory segment this engine's uploads belong under. Defaults to
+   * `directoryFor` — one per signed-in client, `unassigned` for a guest.
+   */
+  directory?: (req: Request) => string;
+  /**
+   * How a stored file is named. Defaults to `storedName`; the translation
+   * enquiry's engine passes the shorter one, because five of its names have to
+   * share a single column.
+   */
+  name?: (originalName: string) => string;
+}
+
 class DocumentStorage implements StorageEngine {
+  constructor(private readonly options: DocumentStorageOptions = {}) {}
+
   _handleFile(
     req: Request,
     file: Express.Multer.File,
     callback: (error?: unknown, info?: Partial<Express.Multer.File>) => void
   ): void {
-    const directory = directoryFor(req);
-    const filename = storedName(file.originalname);
+    const directory = (this.options.directory ?? directoryFor)(req);
+    const filename = (this.options.name ?? storedName)(file.originalname);
     const storedPath = `${directory}/${filename}`;
 
     // Set now rather than in the callback, so a request that fails while this
@@ -245,6 +298,34 @@ export const singleFile = upload.single('file');
 
 /** Several files, matching the portal's multi-select upload. */
 export const manyFiles = upload.array('documents', 10);
+
+/**
+ * The documents attached to a NAATI translation enquiry.
+ *
+ * Its own multer instance rather than a third field on `upload`, because two of
+ * the three things that make an upload are different here. The bytes go to
+ * `service_translation/` instead of under the client's own directory — a
+ * translation enquiry is not an order, has no `client_id` to file it under, and
+ * is answered out of a queue CLS's admin already resolves against that directory
+ * name. And the names are the compact ones, because the enquiry's whole document
+ * record is one `varchar(225)`.
+ *
+ * The file cap is `MAX_TRANSLATION_DOCUMENTS` for that same reason, and is
+ * derived from the column width rather than chosen — multer refusing the sixth
+ * file is the same limit the browser's picker enforces, so the two cannot drift.
+ */
+export const translationEnquiryFiles = multer({
+  storage: new DocumentStorage({
+    directory: () => TRANSLATION_DOCUMENT_DIR,
+    name: translationStoredName,
+  }),
+  fileFilter,
+  limits: {
+    fileSize: env.uploads.maxBytes,
+    files: MAX_TRANSLATION_DOCUMENTS,
+    fields: 30,
+  },
+}).array('documents', MAX_TRANSLATION_DOCUMENTS);
 
 /** Extension and size, for the `meta` line the portal renders. */
 export const describeFile = (

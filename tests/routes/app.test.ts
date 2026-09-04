@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import request from 'supertest';
 import type { Express } from 'express';
 import { createApp } from '../../src/app';
@@ -466,5 +468,98 @@ describe('the order routes resolve in the right order', () => {
     // Not a 404-from-shadowing: without a token this is an authorisation refusal,
     // which proves the reference route is reachable.
     expect(response.status).toBe(401);
+  });
+});
+
+/**
+ * The translation enquiry, which is two endpoints wearing one path.
+ *
+ * Anyone may lodge one as JSON — it is a public intake form, and always has
+ * been. Only a caller holding the secret may attach documents, because those
+ * are written into CLS's S3 bucket and an endpoint that lets an anonymous
+ * caller do that on demand is a way to fill a bucket rather than a way to ask
+ * for a translation.
+ *
+ * The refusal has to happen before multer runs, or every refused request has
+ * already spent the storage it was refused for.
+ */
+describe('attaching documents to a translation enquiry', () => {
+  const uploadDir = path.resolve(
+    process.env.UPLOAD_DIR ?? './uploads',
+    'service_translation'
+  );
+
+  /** What is in the translation upload directory, if it exists at all. */
+  const stored = (): string[] =>
+    fs.existsSync(uploadDir) ? fs.readdirSync(uploadDir) : [];
+
+  it('refuses documents from a caller with no secret', async () => {
+    const before = stored();
+
+    const response = await request(app)
+      .post('/api/enquiries/translation')
+      .field('name', 'Jordan Lee')
+      .field('email', 'jordan@example.com')
+      .field('languageFrom', 'Arabic')
+      .field('languageTo', 'English')
+      .attach('documents', Buffer.from('%PDF-1.7'), {
+        filename: 'passport.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(response.status).toBe(403);
+
+    // The point of the ordering: nothing was written on the way to the
+    // refusal, so a rejected caller cannot spend the bucket anyway.
+    expect(stored()).toEqual(before);
+  });
+
+  it('refuses them with the wrong secret too', async () => {
+    const response = await request(app)
+      .post('/api/enquiries/translation')
+      .set('x-internal-secret', 'not-the-secret')
+      .field('name', 'Jordan Lee')
+      .field('email', 'jordan@example.com')
+      .field('languageFrom', 'Arabic')
+      .field('languageTo', 'English')
+      .attach('documents', Buffer.from('%PDF-1.7'), {
+        filename: 'passport.pdf',
+        contentType: 'application/pdf',
+      });
+
+    expect(response.status).toBe(403);
+  });
+
+  /**
+   * Proven by the *reason* it fails, not by success: a `.php` attachment is
+   * refused by multer's `fileFilter` before the storage engine runs, so a 400
+   * naming the extension means the request got past the secret gate without
+   * anything reaching the disk or the database.
+   */
+  it('lets a caller with the secret through to the file checks', async () => {
+    const response = await request(app)
+      .post('/api/enquiries/translation')
+      .set('x-internal-secret', 'test-internal-secret')
+      .field('name', 'Jordan Lee')
+      .field('email', 'jordan@example.com')
+      .field('languageFrom', 'Arabic')
+      .field('languageTo', 'English')
+      .attach('documents', Buffer.from('<?php'), {
+        filename: 'script.php',
+        contentType: 'application/pdf',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error?.message ?? response.text).toContain('.php');
+  });
+
+  // The public shape is untouched. A 400 from the schema — not a 403 — is what
+  // says the gate let an anonymous JSON enquiry through.
+  it('still takes a JSON enquiry from anyone', async () => {
+    const response = await request(app)
+      .post('/api/enquiries/translation')
+      .send({});
+
+    expect(response.status).toBe(400);
   });
 });
