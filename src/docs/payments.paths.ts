@@ -102,15 +102,25 @@ export const paymentPaths = {
     get: operation('/api/payments/admin', {
       tag,
       summary: 'Every payment, for the back office',
+      description:
+        'There is no legacy equivalent of this screen — the old Symfony admin never had a payments list, only a per-order payment-entry form and a lookup by order number. Server-side paged and filtered so the back office never loads more than one page of `tbl_payment`.',
       auth: 'bearer',
       query: [
         {
           name: 'status',
-          description: 'Filter by state.',
-          enum: ['paid', 'failed', 'pending'],
+          description: '`tbl_payment.payment_status` — 0=failed, 1=complete.',
+          enum: ['complete', 'failed'],
         },
-        { name: 'from', description: 'ISO date. Payments on or after this day.' },
-        { name: 'to', description: 'ISO date. Payments on or before this day.' },
+        {
+          name: 'method',
+          description: '`tbl_payment.payment_option` — 1=card, 0=account.',
+          enum: ['card', 'account'],
+        },
+        {
+          name: 'search',
+          description:
+            'Matches the payer’s name, email or transaction id, or an exact order number.',
+        },
         ...PAGING,
       ],
       responses: {

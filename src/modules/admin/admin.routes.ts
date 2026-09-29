@@ -33,6 +33,23 @@ import {
 } from '../../domain/codes';
 import { orderIdFromReference } from '../../domain/orderReference';
 import * as orderService from '../orders/orders.service';
+import { orderDetailRoutes } from './orderDetail';
+import { contentPageAdminRoutes, sectionAdminRoutes } from './content';
+import {
+  courierOptionAdminRoutes,
+  discountAdminRoutes,
+  documentDeliveryTypeAdminRoutes,
+  policeClearanceAdminRoutes,
+  travelAlertAdminRoutes,
+  voucherTypeAdminRoutes,
+  weightPriceAdminRoutes,
+} from './pricing';
+import { settingsAdminRoutes } from './settings';
+import { passportPhotoRoutes } from './passportPhotos';
+import { translationServiceRoutes } from './translationServices';
+import { generalSettingsAdminRoutes } from './generalSettings';
+import { userRoutes } from './users';
+import { queueRoutes } from './queues';
 
 /**
  * The back office. Staff tokens only.
@@ -884,24 +901,56 @@ adminRoutes.get(
     z.object({
       area: z.enum(['admin', 'dfat', 'client']).optional(),
       userId: z.coerce.number().int().positive().optional(),
+      // Matches inside `log_details` — the JSON blob `audit()` writes, which
+      // carries the action name and whatever reference the action recorded.
+      // The legacy Activity Log screen's "Reference No." search worked the
+      // same way: a substring match against the log line, not a real column.
+      search: z.string().trim().min(1).max(200).optional(),
       page: z.coerce.number().int().positive().optional(),
       perPage: z.coerce.number().int().positive().max(100).optional(),
     }),
     'query'
   ),
   async (req: Request, res: Response) => {
-    const query = validQuery<{ area?: string; userId?: number }>(req);
+    const query = validQuery<{ area?: string; userId?: number; search?: string }>(
+      req
+    );
     const page = readPage(req);
 
     const { rows, count } = await Logs.findAndCountAll({
       where: {
         ...(query.area ? { area: query.area } : {}),
         ...(query.userId ? { user_id: query.userId } : {}),
+        ...(query.search
+          ? { log_details: { [Op.like]: `%${query.search}%` } }
+          : {}),
       },
       order: [['log_datetime', 'DESC']],
       limit: page.limit,
       offset: page.offset,
     });
+
+    // Every log this router writes carries `user_type: 'admin'` — `audit()`
+    // hard-codes it, and nothing else in the codebase writes to `tbl_logs` yet
+    // — so an admin name is the only one worth resolving. A future `dfat` or
+    // `client` writer would need its own lookup here rather than stretching
+    // this one across three unrelated user tables.
+    const adminIds = [
+      ...new Set(
+        rows
+          .filter((row) => row.user_type === 'admin' && row.user_id !== null)
+          .map((row) => row.user_id as number)
+      ),
+    ];
+    const admins = adminIds.length
+      ? await UserAdmin.findAll({ where: { id: adminIds } })
+      : [];
+    const adminName = new Map(
+      admins.map((row) => [
+        row.id,
+        clean([row.fname, row.lname].filter(Boolean).join(' ')),
+      ])
+    );
 
     paged(
       res,
@@ -910,6 +959,7 @@ adminRoutes.get(
         id: row.log_id,
         area: clean(row.area),
         userId: row.user_id,
+        userName: row.user_id !== null ? (adminName.get(row.user_id) ?? null) : null,
         userType: clean(row.user_type),
         at: toIso(row.log_datetime),
         detail: truncate(clean(row.log_details), 2000),
@@ -1118,3 +1168,56 @@ adminRoutes.post(
     });
   }
 );
+
+// ---------------------------------------------------------------------------
+// The five service queues
+// ---------------------------------------------------------------------------
+
+/**
+ * Mounted under its own `/queues` prefix rather than at the router root, so its
+ * `/:queue` wildcard cannot swallow `/orders/export` or any other fixed path
+ * above. It inherits `authenticate, requireAdmin` from this router.
+ */
+adminRoutes.use('/queues', queueRoutes);
+
+/**
+ * One order in full, for the order screen.
+ *
+ * Mounted under `/orders` so its path is `/orders/:id/detail`. The `/detail`
+ * suffix keeps it clear of the queue's own `/orders/:id/*` writes above, which
+ * are matched first.
+ */
+adminRoutes.use('/orders', orderDetailRoutes);
+
+/**
+ * Full CRUD for clients, staff, embassy and TPN accounts — the legacy sidebar's
+ * "Users" menu. Mounted under `/users` rather than `/clients` etc. at the
+ * router root, so a future `/api/admin/clients` (a different resource, should
+ * one ever exist) cannot collide with this.
+ */
+adminRoutes.use('/users', userRoutes);
+
+/** The legacy "Passport Photos" screen — read-only, see `passportPhotos.ts`. */
+adminRoutes.use('/passport-photos', passportPhotoRoutes);
+
+/** The legacy "Translation Services" screen — read-only, see `translationServices.ts`. */
+adminRoutes.use('/translation-services', translationServiceRoutes);
+
+/** The legacy "General Settings" screen — a key/value CRUD list, see `generalSettings.ts`. */
+adminRoutes.use('/general-settings', generalSettingsAdminRoutes);
+
+/** "Manage Content Pages" and "Manage Section" — see `content.ts`. */
+adminRoutes.use('/content-pages', contentPageAdminRoutes);
+adminRoutes.use('/sections', sectionAdminRoutes);
+
+/** "Manage Products & Prices" — the seven multi-row pricing tables. */
+adminRoutes.use('/pricing/police-clearances', policeClearanceAdminRoutes);
+adminRoutes.use('/pricing/courier-options', courierOptionAdminRoutes);
+adminRoutes.use('/pricing/voucher-types', voucherTypeAdminRoutes);
+adminRoutes.use('/pricing/travel-alerts', travelAlertAdminRoutes);
+adminRoutes.use('/pricing/discounts', discountAdminRoutes);
+adminRoutes.use('/pricing/weight-price', weightPriceAdminRoutes);
+adminRoutes.use('/pricing/document-delivery-types', documentDeliveryTypeAdminRoutes);
+
+/** The four singleton settings screens. */
+adminRoutes.use('/settings', settingsAdminRoutes);

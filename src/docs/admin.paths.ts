@@ -1,4 +1,4 @@
-import { PAGING, body, f, okList, okObject, operation } from './shared';
+import { PAGING, body, f, okList, okObject, okRows, operation } from './shared';
 
 /**
  * The back office. Staff tokens only.
@@ -351,6 +351,931 @@ export const adminPaths = {
     }),
   },
 
+  '/api/admin/users/clients': {
+    get: operation('/api/admin/users/clients', {
+      tag,
+      summary: 'Client accounts',
+      description:
+        'Every client account except `type = government` — the legacy list excludes those, since government users are worked through this same table by a different screen.',
+      auth: 'bearer',
+      query: [{ name: 'search', description: 'Name, email or company.' }, ...PAGING],
+      responses: { 200: okRows('Clients', 'clients', true) },
+    }),
+    post: operation('/api/admin/users/clients', {
+      tag,
+      summary: 'Create a client account',
+      description:
+        'Reproduces `ClientsController::newClientAction`. The email is checked against all four user tables — one address must not open two kinds of account.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            type: f.string('public, corporate or government.'),
+            firstName: f.string(),
+            lastName: f.string(),
+            email: f.email(),
+            password: f.string('Left blank, a random one is generated.'),
+            company: f.string(),
+            departmentId: f.id('For a government account.'),
+          },
+          ['type', 'firstName', 'lastName', 'email']
+        ),
+      },
+      responses: {
+        201: okObject('Created', { client: { type: 'object' } }),
+        409: { description: 'That email is already used, in any of the four tables.' },
+      },
+    }),
+  },
+
+  '/api/admin/users/clients/{id}': {
+    get: operation('/api/admin/users/clients/{id}', {
+      tag,
+      summary: 'One client, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Client', { client: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/users/clients/{id}', {
+      tag,
+      summary: 'Update a client account',
+      description:
+        'Every field optional — send only what changed. A blank password leaves the stored hash untouched, matching the legacy edit screen.',
+      auth: 'bearer',
+      body: { schema: body({ firstName: f.string(), email: f.email() }) },
+      responses: {
+        200: okObject('Updated', { client: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+        409: { description: 'That email is already used.' },
+      },
+    }),
+    delete: operation('/api/admin/users/clients/{id}', {
+      tag,
+      summary: 'Delete a client account',
+      description:
+        '**Destructive, and cascades.** Reproduces the legacy `DELETE ... JOIN` across the client, their orders and those orders’ destinations. Kept destructive deliberately — the screen it replaces has always deleted, not archived.',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/users/staff': {
+    get: operation('/api/admin/users/staff', {
+      tag,
+      summary: 'Staff accounts (`tbl_user_admin`)',
+      auth: 'bearer',
+      query: [{ name: 'search', description: 'Name or email.' }, ...PAGING],
+      responses: { 200: okRows('Staff', 'staff', true) },
+    }),
+    post: operation('/api/admin/users/staff', {
+      tag,
+      summary: 'Create a staff account',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            firstName: f.string(),
+            lastName: f.string(),
+            email: f.email(),
+            password: f.string(),
+            isDriver: f.bool(),
+          },
+          ['firstName', 'lastName', 'email']
+        ),
+      },
+      responses: {
+        201: okObject('Created', { staff: { type: 'object' } }),
+        409: { description: 'That email is already used.' },
+      },
+    }),
+  },
+
+  '/api/admin/users/staff/{id}': {
+    get: operation('/api/admin/users/staff/{id}', {
+      tag,
+      summary: 'One staff account',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Staff', { staff: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/users/staff/{id}', {
+      tag,
+      summary: 'Update a staff account',
+      auth: 'bearer',
+      body: { schema: body({ firstName: f.string(), isDriver: f.bool() }) },
+      responses: {
+        200: okObject('Updated', { staff: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/users/staff/{id}', {
+      tag,
+      summary: 'Delete a staff account',
+      description:
+        'Unguarded against deleting your own account, matching the legacy screen. Disabling one instead — where that guard lives — is `PATCH /api/admin/consultants/{id}`.',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/users/embassy': {
+    get: operation('/api/admin/users/embassy', {
+      tag,
+      summary: 'Embassy accounts',
+      auth: 'bearer',
+      query: [{ name: 'search', description: 'Name or email.' }, ...PAGING],
+      responses: { 200: okRows('Embassy users', 'embassy', true) },
+    }),
+    post: operation('/api/admin/users/embassy', {
+      tag,
+      summary: 'Create an embassy account',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            titleId: f.id('`tbl_name_title.id`; unlike the other three tables this is a lookup, not free text.'),
+            firstName: f.string(),
+            lastName: f.string(),
+            email: f.email(),
+            countryId: f.id('`tbl_countries.id`.'),
+            notes: f.string(),
+          },
+          ['firstName', 'lastName', 'email']
+        ),
+      },
+      responses: {
+        201: okObject('Created', { embassy: { type: 'object' } }),
+        409: { description: 'That email is already used.' },
+      },
+    }),
+  },
+
+  '/api/admin/users/embassy/{id}': {
+    get: operation('/api/admin/users/embassy/{id}', {
+      tag,
+      summary: 'One embassy account',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Embassy user', { embassy: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/users/embassy/{id}', {
+      tag,
+      summary: 'Update an embassy account',
+      auth: 'bearer',
+      body: { schema: body({ firstName: f.string(), notes: f.string() }) },
+      responses: {
+        200: okObject('Updated', { embassy: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/users/embassy/{id}', {
+      tag,
+      summary: 'Delete an embassy account',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/users/tpn': {
+    get: operation('/api/admin/users/tpn', {
+      tag,
+      summary: 'TPN staff accounts (`tbl_user_tpn`, the legacy "DFAT" screen)',
+      auth: 'bearer',
+      query: [{ name: 'search', description: 'Name or email.' }, ...PAGING],
+      responses: { 200: okRows('TPN staff', 'tpn', true) },
+    }),
+    post: operation('/api/admin/users/tpn', {
+      tag,
+      summary: 'Create a TPN staff account',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            firstName: f.string(),
+            lastName: f.string(),
+            email: f.email(),
+            phone: f.string(),
+          },
+          ['firstName', 'lastName', 'email']
+        ),
+      },
+      responses: {
+        201: okObject('Created', { tpn: { type: 'object' } }),
+        409: { description: 'That email is already used.' },
+      },
+    }),
+  },
+
+  '/api/admin/users/tpn/{id}': {
+    get: operation('/api/admin/users/tpn/{id}', {
+      tag,
+      summary: 'One TPN staff account',
+      auth: 'bearer',
+      responses: {
+        200: okObject('TPN user', { tpn: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/users/tpn/{id}', {
+      tag,
+      summary: 'Update a TPN staff account',
+      auth: 'bearer',
+      body: { schema: body({ firstName: f.string(), phone: f.string() }) },
+      responses: {
+        200: okObject('Updated', { tpn: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/users/tpn/{id}', {
+      tag,
+      summary: 'Delete a TPN staff account',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/passport-photos': {
+    get: operation('/api/admin/passport-photos', {
+      tag,
+      summary: 'Every client passport photo on file',
+      description:
+        'Reproduces `ManagePassportOfficePickupDeliveryController::passportPhotosAction`. `tbl_user_client.passport_photo` is one column, one photo per client, with no review state — so this is read-only, newest upload first.',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Photos', 'photos', true) },
+    }),
+  },
+
+  '/api/admin/passport-photos/{id}/file': {
+    get: operation('/api/admin/passport-photos/{id}/file', {
+      tag,
+      summary: "One client's photo file",
+      description:
+        'Streams the stored file, the same way `/api/portal/passport-photos/{id}/download` does for the client themselves.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The image', content: { 'image/*': { schema: { type: 'string', format: 'binary' } } } },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/translation-services': {
+    get: operation('/api/admin/translation-services', {
+      tag,
+      summary: 'Every translation-service enquiry on file',
+      description:
+        'Reproduces `ManageGeneralSettingsController::translationServicesAction`. Read-only — the legacy screen never had a create, edit or delete action, only a list and a download.',
+      auth: 'bearer',
+      query: [
+        { name: 'search', description: 'Matches the name, email or either language.' },
+        ...PAGING,
+      ],
+      responses: { 200: okRows('Enquiries', 'enquiries', true) },
+    }),
+  },
+
+  '/api/admin/translation-services/{id}/documents/{filename}/file': {
+    get: operation('/api/admin/translation-services/{id}/documents/{filename}/file', {
+      tag,
+      summary: "One enquiry's attached document",
+      description:
+        '`filename` must be one of that row’s own `document_name` entries — a stricter check than the legacy download, which trusted a bare `?filename=` against a fixed directory with no ownership check at all.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The file', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/general-settings': {
+    get: operation('/api/admin/general-settings', {
+      tag,
+      summary: 'Named key/value settings',
+      description:
+        'Reproduces `ManageGeneralSettingsController::indexAction`. A CRUD list of arbitrary settings, each a free-text value or a yes/no toggle — not a singleton form.',
+      auth: 'bearer',
+      query: [
+        { name: 'search', description: 'Matches the title or the constant.' },
+        ...PAGING,
+      ],
+      responses: { 200: okRows('Settings', 'settings', true) },
+    }),
+    post: operation('/api/admin/general-settings', {
+      tag,
+      summary: 'Create a setting',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/general-settings/{id}': {
+    get: operation('/api/admin/general-settings/{id}', {
+      tag,
+      summary: 'One setting, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Setting', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/general-settings/{id}', {
+      tag,
+      summary: 'Update a setting',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/general-settings/{id}', {
+      tag,
+      summary: 'Delete a setting',
+      description:
+        'The legacy screen never wired a delete action to this list — this adds one, as a safety net rather than a ported feature. See the note on `generalSettings.ts`.',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/content-pages': {
+    get: operation('/api/admin/content-pages', {
+      tag,
+      summary: 'Freestanding content pages',
+      description: 'Reproduces `ManageContentPagesController`. A title and a block of HTML, rendered on the public site exactly as staff wrote it.',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Pages', 'pages', true) },
+    }),
+    post: operation('/api/admin/content-pages', {
+      tag,
+      summary: 'Create a content page',
+      auth: 'bearer',
+      body: { schema: body({ title: f.string(), html: f.string() }, ['title', 'html']) },
+      responses: { 201: okObject('Created', { page: { type: 'object' } }) },
+    }),
+  },
+
+  '/api/admin/content-pages/{id}': {
+    get: operation('/api/admin/content-pages/{id}', {
+      tag,
+      summary: 'One content page, HTML included',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Page', { page: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/content-pages/{id}', {
+      tag,
+      summary: 'Update a content page',
+      auth: 'bearer',
+      body: { schema: body({ title: f.string(), html: f.string() }) },
+      responses: {
+        200: okObject('Updated', { page: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/content-pages/{id}/status': {
+    patch: operation('/api/admin/content-pages/{id}/status', {
+      tag,
+      summary: 'Toggle a page active/inactive',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Toggled', { id: { type: 'integer' }, status: { type: 'string' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/sections': {
+    get: operation('/api/admin/sections', {
+      tag,
+      summary: 'Fixed content sections the website templates reference',
+      description: 'Reproduces `ManageSectionsController`. No create here — each row is already wired into a template by `page_slug`, so a new one would have nothing to render it.',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Sections', 'sections', true) },
+    }),
+  },
+
+  '/api/admin/sections/{id}': {
+    get: operation('/api/admin/sections/{id}', {
+      tag,
+      summary: 'One section, content included',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Section', { section: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/sections/{id}', {
+      tag,
+      summary: 'Update a section',
+      auth: 'bearer',
+      body: { schema: body({ title: f.string(), content: f.string() }) },
+      responses: {
+        200: okObject('Updated', { section: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/sections/{id}/status': {
+    patch: operation('/api/admin/sections/{id}/status', {
+      tag,
+      summary: 'Toggle a section active/inactive',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Toggled', { id: { type: 'integer' }, status: { type: 'string' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+
+  '/api/admin/pricing/police-clearances': {
+    get: operation('/api/admin/pricing/police-clearances', {
+      tag,
+      summary: 'Police clearance types',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Police clearance types', 'clearances', true) },
+    }),
+    post: operation('/api/admin/pricing/police-clearances', {
+      tag,
+      summary: 'Create a police clearance type row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/police-clearances/{id}': {
+    get: operation('/api/admin/pricing/police-clearances/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/police-clearances/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/police-clearances/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/pricing/courier-options': {
+    get: operation('/api/admin/pricing/courier-options', {
+      tag,
+      summary: 'Visa courier options',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Visa courier options', 'options', true) },
+    }),
+    post: operation('/api/admin/pricing/courier-options', {
+      tag,
+      summary: 'Create a visa courier option row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/courier-options/{id}': {
+    get: operation('/api/admin/pricing/courier-options/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/courier-options/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/courier-options/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/pricing/voucher-types': {
+    get: operation('/api/admin/pricing/voucher-types', {
+      tag,
+      summary: 'Russian visa voucher types',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Russian visa voucher types', 'types', true) },
+    }),
+    post: operation('/api/admin/pricing/voucher-types', {
+      tag,
+      summary: 'Create a russian visa voucher type row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/voucher-types/{id}': {
+    get: operation('/api/admin/pricing/voucher-types/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/voucher-types/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/voucher-types/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/pricing/travel-alerts': {
+    get: operation('/api/admin/pricing/travel-alerts', {
+      tag,
+      summary: 'Travel alerts',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Travel alerts', 'alerts', true) },
+    }),
+    post: operation('/api/admin/pricing/travel-alerts', {
+      tag,
+      summary: 'Create a travel alert row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/travel-alerts/{id}': {
+    get: operation('/api/admin/pricing/travel-alerts/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/travel-alerts/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/travel-alerts/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/pricing/discounts': {
+    get: operation('/api/admin/pricing/discounts', {
+      tag,
+      summary: 'Discount codes',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Discount codes', 'discounts', true) },
+    }),
+    post: operation('/api/admin/pricing/discounts', {
+      tag,
+      summary: 'Create a discount code row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/discounts/{id}': {
+    get: operation('/api/admin/pricing/discounts/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/discounts/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/discounts/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/pricing/weight-price': {
+    get: operation('/api/admin/pricing/weight-price', {
+      tag,
+      summary: 'Weight price bands',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Weight price bands', 'bands', true) },
+    }),
+    post: operation('/api/admin/pricing/weight-price', {
+      tag,
+      summary: 'Create a weight price band row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/weight-price/{id}': {
+    get: operation('/api/admin/pricing/weight-price/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/weight-price/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/weight-price/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/pricing/document-delivery-types': {
+    get: operation('/api/admin/pricing/document-delivery-types', {
+      tag,
+      summary: 'Document delivery types',
+      auth: 'bearer',
+      query: [...PAGING],
+      responses: { 200: okRows('Document delivery types', 'types', true) },
+    }),
+    post: operation('/api/admin/pricing/document-delivery-types', {
+      tag,
+      summary: 'Create a document delivery type row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: { 201: okObject('Created', {}) },
+    }),
+  },
+
+  '/api/admin/pricing/document-delivery-types/{id}': {
+    get: operation('/api/admin/pricing/document-delivery-types/{id}', {
+      tag,
+      summary: 'One row, in full',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Row', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    patch: operation('/api/admin/pricing/document-delivery-types/{id}', {
+      tag,
+      summary: 'Update a row',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', {}),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/pricing/document-delivery-types/{id}', {
+      tag,
+      summary: 'Delete a row',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/settings/passport-delivery': {
+    get: operation('/api/admin/settings/passport-delivery', {
+      tag,
+      summary: 'Passport office pickup/delivery pricing (one row)',
+      description: 'Reproduces `ManagePassportOfficePickupDeliveryController::indexAction`. A single row — `tbl_settings_passport` — not a table.',
+      auth: 'bearer',
+      responses: { 200: okObject('Settings', { settings: { type: 'object' } }) },
+    }),
+    patch: operation('/api/admin/settings/passport-delivery', {
+      tag,
+      summary: 'Update the passport delivery pricing',
+      auth: 'bearer',
+      body: { schema: body({ costCents: f.cents(), additionalCostCents: f.cents() }) },
+      responses: { 200: okObject('Updated', { settings: { type: 'object' } }) },
+    }),
+  },
+
+  '/api/admin/settings/saudi-visa-popup': {
+    get: operation('/api/admin/settings/saudi-visa-popup', {
+      tag,
+      summary: 'The Saudi visa popup content (one row)',
+      auth: 'bearer',
+      responses: { 200: okObject('Content', { content: { type: 'string' } }) },
+    }),
+    patch: operation('/api/admin/settings/saudi-visa-popup', {
+      tag,
+      summary: 'Update the popup content',
+      auth: 'bearer',
+      body: { schema: body({ content: f.string() }, ['content']) },
+      responses: { 200: okObject('Updated', { content: { type: 'string' } }) },
+    }),
+  },
+
+  '/api/admin/settings/credit-card-fee': {
+    get: operation('/api/admin/settings/credit-card-fee', {
+      tag,
+      summary: 'The credit card processing fee (retained, unused)',
+      description: 'The fee was removed from every price on the website as of 2026-09-03. This screen and column are kept because the legacy admin has them, and the response says so — see the module note on `settings.ts`.',
+      auth: 'bearer',
+      responses: { 200: okObject('Fee', { feeCents: { type: 'integer' }, deprecated: { type: 'boolean' } }) },
+    }),
+    patch: operation('/api/admin/settings/credit-card-fee', {
+      tag,
+      summary: 'Update the fee (has no effect on pricing)',
+      auth: 'bearer',
+      body: { schema: body({ feeCents: f.cents() }, ['feeCents']) },
+      responses: { 200: okObject('Updated', { feeCents: { type: 'integer' } }) },
+    }),
+  },
+
+  '/api/admin/settings/doc-legalisation-attachment': {
+    get: operation('/api/admin/settings/doc-legalisation-attachment', {
+      tag,
+      summary: 'The current document legalisation attachment (read-only)',
+      description: 'Read-only: replacing the file needs an upload path this admin has not built yet — see the note on `settings.ts`.',
+      auth: 'bearer',
+      responses: { 200: okObject('Attachment', { attachmentFile: { type: 'string', nullable: true } }) },
+    }),
+  },
+
+  '/api/admin/orders/{id}/detail': {
+    get: operation('/api/admin/orders/{id}/detail', {
+      tag,
+      summary: 'One order, in full',
+      description:
+        'Everything the legacy admin’s order screen shows, for one order.\n\n**Shaped per service.** A common core — the order, its four milestone dates, the primary applicant, the return-document details and the payment — plus a `detail` block whose fields depend on `order.orderType`. The old `ViewOrder` templates are one file per service and do not agree about what an order is: a police clearance screen has four panels, a public visa thirteen, a voucher an Employment Details panel nothing else has.\n\n**Reads only the rows this order needs.** The per-service detail is a second query chosen by `order_type`, not four joins with three discarded. Use this rather than searching the queue for one row.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The order', {
+          order: { type: 'object' },
+          milestones: {
+            type: 'object',
+            description:
+              'The four dates the Order Progress panel shows. All null on a service with no detail table of its own.',
+          },
+          applicant: { type: 'object', nullable: true },
+          returnDocument: { type: 'object', nullable: true },
+          payment: { type: 'object', nullable: true },
+          detail: {
+            type: 'object',
+            nullable: true,
+            description: 'Service-specific panels. Null for a plain visa.',
+          },
+        }),
+        403: { $ref: '#/components/responses/Forbidden' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/queues/{queue}': {
+    get: operation('/api/admin/queues/{queue}', {
+      tag,
+      summary: 'One of the five service queues',
+      description:
+        'Reproduces a specific screen from the admin CLS has used for years, down to which columns it shows and which rows it includes — so each queue returns a **different row shape**.\n\nThey differ in what they include, not just what they display. `police-clearance` lists every order of that type, unplaced ones among them. `public-visa` lists only orders that were submitted *and* carry `status = 1`. `document-legalisation` has an invoice number and a reference no other service does.\n\nUse `/api/admin/orders` instead where one filterable queue across all services is wanted; this is for parity with the screens being replaced.',
+      auth: 'bearer',
+      query: [
+        {
+          name: 'search',
+          description:
+            'Matches the reference, and the contact name on the two queues that show one.',
+        },
+        ...PAGING,
+      ],
+      responses: {
+        200: okObject('The queue', {
+          rows: {
+            type: 'array',
+            items: { type: 'object' },
+            description:
+              'Columns vary by queue — see the description. Every row carries `id` and `status`.',
+          },
+          pagination: { type: 'object' },
+        }),
+        403: { $ref: '#/components/responses/Forbidden' },
+      },
+    }),
+  },
+
   '/api/admin/consultants': {
     get: operation('/api/admin/consultants', {
       tag,
@@ -459,9 +1384,16 @@ export const adminPaths = {
         'What staff have changed, from whichever log table the old application writes. Read-only here: this API appends to the trail as a side effect of the endpoints above rather than letting anything write to it directly.',
       auth: 'bearer',
       query: [
+        {
+          name: 'area',
+          description: '`admin`, `dfat` or `client` — `tbl_logs.area`.',
+        },
         { name: 'userId', description: '`tbl_user_admin.id`.', type: 'integer' },
-        { name: 'from', description: 'ISO date.' },
-        { name: 'to', description: 'ISO date.' },
+        {
+          name: 'search',
+          description:
+            'Substring match against the JSON blob in `log_details` — the same "Reference No." search the legacy Activity Log had, since nothing in this row is a structured reference column.',
+        },
         ...PAGING,
       ],
       responses: {

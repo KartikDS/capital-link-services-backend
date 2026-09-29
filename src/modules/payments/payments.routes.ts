@@ -1,14 +1,22 @@
+import { Op } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Payment, UserClient } from '../../models';
 import { authenticate, currentUserId, requireAdmin } from '../../middleware/authenticate';
 import { internalOnly } from '../../middleware/requestContext';
 import { badRequest, notFound } from '../../shared/errors';
-import { created, ok } from '../../shared/http/responses';
+import { created, ok, paged } from '../../shared/http/responses';
+import { pageMeta, readPage } from '../../shared/http/pagination';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { centsToNumber, formatAud, toCents } from '../../shared/money';
 import { clean, fullName, maskEmail } from '../../shared/text';
-import { emailField, idParam, validate, validParams } from '../../shared/validation';
+import {
+  emailField,
+  idParam,
+  validate,
+  validParams,
+  validQuery,
+} from '../../shared/validation';
 import { logger } from '../../shared/logger';
 import {
   CLS_ORDER_STATUS,
@@ -452,17 +460,83 @@ adminPaymentRoutes.post(
   }
 );
 
-/** GET /api/payments/admin — every payment, newest first. */
-adminPaymentRoutes.get('/', async (_req: Request, res: Response) => {
-  const rows = await Payment.findAll({
-    order: [['date_paid', 'DESC']],
-    limit: 200,
-  });
+/**
+ * GET /api/payments/admin — every payment, newest first.
+ *
+ * There is no legacy equivalent of this screen — the old Symfony admin never
+ * had a payments list, only a per-order payment-entry form (`ProcessPayment`,
+ * `PayNow`) and a `findOneBy(order_no)` lookup everywhere else. So this is
+ * shaped around what `toReceipt` already returns rather than a legacy column
+ * list, with server-side paging so the back office never has to load more
+ * than one page of `tbl_payment` to render it.
+ */
+adminPaymentRoutes.get(
+  '/',
+  validate(
+    z.object({
+      status: z.enum(['complete', 'failed']).optional(),
+      method: z.enum(['card', 'account']).optional(),
+      search: z.string().trim().min(1).max(200).optional(),
+      page: z.coerce.number().int().positive().optional(),
+      perPage: z.coerce.number().int().positive().max(100).optional(),
+    }),
+    'query'
+  ),
+  async (req: Request, res: Response) => {
+    const query = validQuery<{
+      status?: 'complete' | 'failed';
+      method?: 'card' | 'account';
+      search?: string;
+    }>(req);
+    const page = readPage(req);
 
-  ok(res, {
-    payments: rows.map((row) => toReceipt(row, String(row.order_no ?? '—'))),
-  });
-});
+    const searchedOrderNo = query.search ? Number.parseInt(query.search, 10) : NaN;
+
+    const { rows, count } = await Payment.findAndCountAll({
+      where: {
+        ...(query.status
+          ? {
+              payment_status:
+                query.status === 'complete'
+                  ? PAYMENT_STATUS.COMPLETE
+                  : PAYMENT_STATUS.FAILED,
+            }
+          : {}),
+        ...(query.method
+          ? {
+              payment_option:
+                query.method === 'card'
+                  ? PAYMENT_OPTION.CREDIT_CARD
+                  : PAYMENT_OPTION.ON_ACCOUNT,
+            }
+          : {}),
+        ...(query.search
+          ? {
+              [Op.or]: [
+                { fname: { [Op.like]: `%${query.search}%` } },
+                { lname: { [Op.like]: `%${query.search}%` } },
+                { email: { [Op.like]: `%${query.search}%` } },
+                { transaction_id: { [Op.like]: `%${query.search}%` } },
+                ...(Number.isSafeInteger(searchedOrderNo)
+                  ? [{ order_no: searchedOrderNo }]
+                  : []),
+              ],
+            }
+          : {}),
+      },
+      order: [['date_paid', 'DESC']],
+      limit: page.limit,
+      offset: page.offset,
+    });
+
+    paged(
+      res,
+      'payments',
+      rows.map((row) => toReceipt(row, String(row.order_no ?? '—'))),
+      pageMeta(page, count)
+    );
+  }
+);
 
 paymentRoutes.use('/admin', adminPaymentRoutes);
 

@@ -137,6 +137,35 @@ export const applyAssociations = (): void => {
     ...LOOSE,
   });
 
+  /**
+   * The catalogue row an order names directly, for the two services that do.
+   *
+   * These duplicate a link that already exists further down from the *detail*
+   * tables (`PoliceClearanceOrderDetails.clearance`,
+   * `RussianVisaVoucherOrderDetails.voucherType`), and that is deliberate rather
+   * than redundant: `tbl_cls_order` carries its own `police_clearance_id` and
+   * `russian_visa_voucher_id`, and the legacy admin's queues join *those*, not
+   * the detail tables. An order whose detail row is missing still shows its type
+   * in the old screen, so reading it through the detail row would leave a blank
+   * where CLS's staff are used to seeing one.
+   */
+  M.ClsOrder.belongsTo(M.PoliceClearances, {
+    foreignKey: 'police_clearance_id',
+    targetKey: 'id',
+    as: 'clearanceType',
+    ...LOOSE,
+  });
+
+  // `tbl_cls_order.russian_visa_voucher_id` points at
+  // `tbl_russian_visa_voucher_types` — the legacy `RussianVisaVoucher` entity is
+  // mapped to that table, despite its singular name.
+  M.ClsOrder.belongsTo(M.RussianVisaVoucherTypes, {
+    foreignKey: 'russian_visa_voucher_id',
+    targetKey: 'id',
+    as: 'voucherCatalogue',
+    ...LOOSE,
+  });
+
   linkChildren(
     M.ClsOrder,
     [

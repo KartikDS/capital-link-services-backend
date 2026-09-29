@@ -74,6 +74,31 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     description:
       'The order reference the client holds — `CLS-100482`, or a bare integer for an order placed through the old application.',
   },
+  filename: {
+    name: 'filename',
+    in: 'path',
+    required: true,
+    schema: { type: 'string' },
+    description:
+      'One of the stored filenames the row itself carries — not an arbitrary path, the endpoint checks it belongs to that row.',
+  },
+  queue: {
+    name: 'queue',
+    in: 'path',
+    required: true,
+    schema: {
+      type: 'string',
+      enum: [
+        'public-visa',
+        'police-clearance',
+        'russian-visa-voucher',
+        'document-delivery',
+        'document-legalisation',
+      ],
+    },
+    description:
+      'Which back-office queue to read. Deliberately a different set from `service` below: these are the five screens the legacy admin opens on, and each returns its own columns.',
+  },
   service: {
     name: 'service',
     in: 'path',
