@@ -722,6 +722,115 @@ export const adminPaths = {
     }),
   },
 
+  '/api/admin/saudi-invitation-letters': {
+    get: operation('/api/admin/saudi-invitation-letters', {
+      tag,
+      summary: 'Saudi invitation letter applications',
+      description:
+        'Reproduces `SaudiInvitationLetterController::indexAction`. One row per application — `tbl_saudi_invitation_letters` rows with `parent_id = 0`; co-applicants are read through the detail endpoint below.',
+      auth: 'bearer',
+      query: [
+        { name: 'search', description: 'Matches the name, email or phone.' },
+        ...PAGING,
+      ],
+      responses: { 200: okRows('Applications', 'applications', true) },
+    }),
+  },
+
+  '/api/admin/saudi-invitation-letters/{id}': {
+    get: operation('/api/admin/saudi-invitation-letters/{id}', {
+      tag,
+      summary: 'One application, primary and co-applicants',
+      description:
+        '`{id}` is the primary applicant’s own row id. Reproduces `viewApplicantDetailsAction`.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Application', {
+          application: {
+            type: 'object',
+            properties: {
+              primary: { type: 'object' },
+              coApplicants: { type: 'array', items: { type: 'object' } },
+            },
+          },
+        }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/saudi-invitation-letters/{id}/applicants': {
+    post: operation('/api/admin/saudi-invitation-letters/{id}/applicants', {
+      tag,
+      summary: 'Add a co-applicant to an application',
+      description: 'Refuses past five applicants total, the legacy form’s own cap.',
+      auth: 'bearer',
+      responses: {
+        201: okObject('Created', { applicant: { type: 'object' } }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/saudi-invitation-letters/applicants/{rowId}': {
+    patch: operation('/api/admin/saudi-invitation-letters/applicants/{rowId}', {
+      tag,
+      summary: 'Update one applicant',
+      description:
+        'The sponsor fields, the multi-apply-before date and the comment only ever apply to applicant 1 in the legacy form and are silently ignored on anyone else’s row.',
+      auth: 'bearer',
+      body: { schema: body({}, []) },
+      responses: {
+        200: okObject('Updated', { applicant: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/saudi-invitation-letters/applicants/{rowId}', {
+      tag,
+      summary: 'Remove a co-applicant',
+      description: 'Refuses on the primary applicant — see the note on `saudiInvitationLetters.ts`.',
+      auth: 'bearer',
+      responses: {
+        204: { description: 'Deleted.' },
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/free-visa-documents': {
+    get: operation('/api/admin/free-visa-documents', {
+      tag,
+      summary: 'Free visa documents clients have uploaded',
+      description:
+        'Reproduces `ManagePassportOfficePickupDeliveryController::freeVisaDocumentAction`. Read-only — the legacy screen has no create, edit or delete action, only a list and a download.',
+      auth: 'bearer',
+      query: [
+        { name: 'search', description: 'Matches the client’s name or email.' },
+        ...PAGING,
+      ],
+      responses: { 200: okRows('Documents', 'documents', true) },
+    }),
+  },
+
+  '/api/admin/free-visa-documents/{id}/file': {
+    get: operation('/api/admin/free-visa-documents/{id}/file', {
+      tag,
+      summary: "One document's file",
+      auth: 'bearer',
+      responses: {
+        200: {
+          description: 'The file',
+          content: {
+            'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
   '/api/admin/content-pages': {
     get: operation('/api/admin/content-pages', {
       tag,
@@ -798,6 +907,8 @@ export const adminPaths = {
     patch: operation('/api/admin/sections/{id}', {
       tag,
       summary: 'Update a section',
+      description:
+        'Accepts a plain JSON body or `multipart/form-data` with the same fields plus an optional `image` file — the image column is only touched when one is attached.',
       auth: 'bearer',
       body: { schema: body({ title: f.string(), content: f.string() }) },
       responses: {
@@ -1209,10 +1320,26 @@ export const adminPaths = {
   '/api/admin/settings/doc-legalisation-attachment': {
     get: operation('/api/admin/settings/doc-legalisation-attachment', {
       tag,
-      summary: 'The current document legalisation attachment (read-only)',
-      description: 'Read-only: replacing the file needs an upload path this admin has not built yet — see the note on `settings.ts`.',
+      summary: 'The current document legalisation attachment',
       auth: 'bearer',
       responses: { 200: okObject('Attachment', { attachmentFile: { type: 'string', nullable: true } }) },
+    }),
+    post: operation('/api/admin/settings/doc-legalisation-attachment', {
+      tag,
+      summary: 'Replace the attachment',
+      description:
+        'Reproduces `ManageDocumentLegalizationAttachmentController::indexAction`’s upload. `multipart/form-data` with a single `file` field.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Replaced', { attachmentFile: { type: 'string', nullable: true } }),
+        400: { $ref: '#/components/responses/BadRequest' },
+      },
+    }),
+    delete: operation('/api/admin/settings/doc-legalisation-attachment', {
+      tag,
+      summary: 'Remove the attachment',
+      auth: 'bearer',
+      responses: { 204: { description: 'Removed.' } },
     }),
   },
 
@@ -1241,6 +1368,35 @@ export const adminPaths = {
           },
         }),
         403: { $ref: '#/components/responses/Forbidden' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/checklist/{checklistId}/file': {
+    patch: operation('/api/admin/orders/{id}/checklist/{checklistId}/file', {
+      tag,
+      summary: 'Replace a Document Checklist row’s file',
+      description:
+        '`multipart/form-data` with a single `file` field. `{checklistId}` must belong to the order named by `{id}` — `tbl_order_dl_checklist` has no foreign key of its own, so this checks it rather than trusting the URL.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Replaced', { checklist: { type: 'object' } }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/voucher/passport-file': {
+    patch: operation('/api/admin/orders/{id}/voucher/passport-file', {
+      tag,
+      summary: 'Replace a Russian visa voucher order’s passport scan',
+      description: '`multipart/form-data` with a single `file` field.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Replaced', { hasPassportFile: { type: 'boolean' } }),
+        400: { $ref: '#/components/responses/BadRequest' },
         404: { $ref: '#/components/responses/NotFound' },
       },
     }),

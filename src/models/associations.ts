@@ -563,4 +563,22 @@ export const applyAssociations = (): void => {
     as: 'nationalityCountry',
     ...LOOSE,
   });
+
+  // -------------------------------------------------------------------------
+  // Free visa documents
+  // -------------------------------------------------------------------------
+
+  M.FreeVisaDocument.belongsTo(M.Countries, {
+    foreignKey: 'country_id',
+    targetKey: 'id',
+    as: 'destinationCountry',
+    ...LOOSE,
+  });
+
+  M.FreeVisaDocument.belongsTo(M.UserClient, {
+    foreignKey: 'client_id',
+    targetKey: 'id',
+    as: 'client',
+    ...LOOSE,
+  });
 };

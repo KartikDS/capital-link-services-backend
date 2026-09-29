@@ -6,7 +6,10 @@ import {
   SettingsPassport,
   VisaPopupContent,
 } from '../../models';
-import { ok } from '../../shared/http/responses';
+import { adminDocLegalisationAttachmentUpload } from '../../middleware/upload';
+import { badRequest } from '../../shared/errors';
+import { noContent, ok } from '../../shared/http/responses';
+import { discardDocument, storedPathOf } from '../../shared/storage/documents';
 import { centsToNumber, toCents } from '../../shared/money';
 import { clean } from '../../shared/text';
 
@@ -123,14 +126,12 @@ settingsAdminRoutes.patch('/credit-card-fee', async (req: Request, res: Response
 });
 
 /**
- * GET /api/admin/settings/doc-legalisation-attachment —
+ * GET/POST/DELETE /api/admin/settings/doc-legalisation-attachment —
  * `DocLegalizationAttachments`.
  *
- * Read-only here: the legacy screen's only write is a file upload
- * (`ManageDocumentLegalizationAttachmentController::indexAction`) and a
- * removal, and this admin's file-upload path is not built yet — see the note
- * on section images in `content.ts`. The current filename is shown so a
- * consultant can see what is live.
+ * Reproduces `ManageDocumentLegalizationAttachmentController::indexAction`
+ * (upload) and its removal action. The current filename is returned on every
+ * call so a consultant can see what is live.
  */
 settingsAdminRoutes.get(
   '/doc-legalisation-attachment',
@@ -140,5 +141,40 @@ settingsAdminRoutes.get(
       defaults: { id: 1, attachment_file: null },
     });
     ok(res, { attachmentFile: clean(row.attachment_file) });
+  }
+);
+
+settingsAdminRoutes.post(
+  '/doc-legalisation-attachment',
+  adminDocLegalisationAttachmentUpload,
+  async (req: Request, res: Response) => {
+    if (!req.file) throw badRequest('Attach a file.');
+
+    const [row] = await DocLegalizationAttachments.findOrCreate({
+      where: { id: 1 },
+      defaults: { id: 1, attachment_file: null },
+    });
+
+    const previous = clean(row.attachment_file);
+    await row.update({ attachment_file: storedPathOf(req.file) });
+    if (previous) void discardDocument(previous);
+
+    ok(res, { attachmentFile: clean(row.attachment_file) });
+  }
+);
+
+settingsAdminRoutes.delete(
+  '/doc-legalisation-attachment',
+  async (_req: Request, res: Response) => {
+    const [row] = await DocLegalizationAttachments.findOrCreate({
+      where: { id: 1 },
+      defaults: { id: 1, attachment_file: null },
+    });
+
+    const previous = clean(row.attachment_file);
+    await row.update({ attachment_file: null });
+    if (previous) void discardDocument(previous);
+
+    noContent(res);
   }
 );

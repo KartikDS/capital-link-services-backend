@@ -48,6 +48,8 @@ import { settingsAdminRoutes } from './settings';
 import { passportPhotoRoutes } from './passportPhotos';
 import { translationServiceRoutes } from './translationServices';
 import { generalSettingsAdminRoutes } from './generalSettings';
+import { saudiInvitationLetterAdminRoutes } from './saudiInvitationLetters';
+import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
 import { queueRoutes } from './queues';
 
@@ -1205,6 +1207,12 @@ adminRoutes.use('/translation-services', translationServiceRoutes);
 
 /** The legacy "General Settings" screen — a key/value CRUD list, see `generalSettings.ts`. */
 adminRoutes.use('/general-settings', generalSettingsAdminRoutes);
+
+/** The legacy "Saudi Invitation Letters" screen — see `saudiInvitationLetters.ts`. */
+adminRoutes.use('/saudi-invitation-letters', saudiInvitationLetterAdminRoutes);
+
+/** The legacy "Free Visa Document" screen — read-only, see `freeVisaDocument.ts`. */
+adminRoutes.use('/free-visa-documents', freeVisaDocumentAdminRoutes);
 
 /** "Manage Content Pages" and "Manage Section" — see `content.ts`. */
 adminRoutes.use('/content-pages', contentPageAdminRoutes);

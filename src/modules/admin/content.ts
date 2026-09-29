@@ -1,9 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { ContentPages, Sections } from '../../models';
+import { adminSectionImageUpload } from '../../middleware/upload';
 import { notFound } from '../../shared/errors';
 import { created, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
+import { storedPathOf } from '../../shared/storage/documents';
 import { clean } from '../../shared/text';
 import { idParam, validate, validParams } from '../../shared/validation';
 
@@ -190,10 +192,16 @@ sectionAdminRoutes.get(
  *
  * No POST alongside it — sections are fixed rows the website's templates
  * already reference by `page_slug`. See the module note.
+ *
+ * `adminSectionImageUpload` runs first so a multipart body's text fields land
+ * on `req.body` the same as a JSON one's — multer has to populate it before
+ * anything downstream reads it. A request with no `image` field is exactly
+ * as valid as before: the image column is only touched when one arrives.
  */
 sectionAdminRoutes.patch(
   '/:id',
   validate(z.object({ id: idParam }), 'params'),
+  adminSectionImageUpload,
   async (req: Request, res: Response) => {
     const { id } = validParams<{ id: number }>(req);
     const body = sectionBody.partial().parse(req.body);
@@ -204,6 +212,7 @@ sectionAdminRoutes.patch(
     await row.update({
       ...(body.title !== undefined ? { title: body.title } : {}),
       ...(body.content !== undefined ? { content: stripScripts(body.content) } : {}),
+      ...(req.file ? { image: storedPathOf(req.file) } : {}),
       status: 'active',
     });
 

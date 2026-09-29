@@ -20,10 +20,15 @@ import {
   UserClient,
   VisaCourierOptions,
 } from '../../models';
+import {
+  adminChecklistFileUpload,
+  adminVoucherPassportFileUpload,
+} from '../../middleware/upload';
 import { ok } from '../../shared/http/responses';
-import { notFound } from '../../shared/errors';
+import { badRequest, notFound } from '../../shared/errors';
 import { toIso } from '../../shared/dates';
 import { toCents } from '../../shared/money';
+import { discardDocument, storedPathOf } from '../../shared/storage/documents';
 import { clean } from '../../shared/text';
 import { idParam, validate, validParams } from '../../shared/validation';
 import { ORDER_TYPE } from '../../domain/codes';
@@ -625,5 +630,64 @@ orderDetailRoutes.get(
         : null,
       detail,
     });
+  }
+);
+
+/**
+ * PATCH /api/admin/orders/:id/checklist/:checklistId/file
+ *
+ * Replaces a Document Checklist row's file — `tbl_order_dl_checklist` has no
+ * `order_no` foreign key constraint, so `:id` is checked against the row's
+ * own `order_no` rather than trusted from the URL alone.
+ */
+orderDetailRoutes.patch(
+  '/:id/checklist/:checklistId/file',
+  validate(z.object({ id: idParam, checklistId: idParam }), 'params'),
+  adminChecklistFileUpload,
+  async (req: Request, res: Response) => {
+    const { id, checklistId } = validParams<{ id: number; checklistId: number }>(
+      req
+    );
+    if (!req.file) throw badRequest('Attach a file.');
+
+    const row = await OrderDlChecklist.findByPk(checklistId);
+    if (!row || row.order_no !== id) {
+      throw notFound('We could not find that checklist row.');
+    }
+
+    const previous = clean(row.doc_file);
+    await row.update({ doc_file: storedPathOf(req.file) });
+    if (previous) void discardDocument(previous);
+
+    ok(res, { checklist: checklistRowOf(row) });
+  }
+);
+
+/**
+ * PATCH /api/admin/orders/:id/voucher/passport-file
+ *
+ * Replaces the passport scan on a Russian visa voucher order — the one file
+ * that service's legacy screen links but the read side of this API only
+ * ever flagged as present, not exposed for writing (see the note in the
+ * `detail` block below on `hasPassportFile`).
+ */
+orderDetailRoutes.patch(
+  '/:id/voucher/passport-file',
+  validate(z.object({ id: idParam }), 'params'),
+  adminVoucherPassportFileUpload,
+  async (req: Request, res: Response) => {
+    const { id } = validParams<{ id: number }>(req);
+    if (!req.file) throw badRequest('Attach a file.');
+
+    const row = await RussianVisaVoucherOrderDetails.findOne({
+      where: { order_id: id },
+    });
+    if (!row) throw notFound('We could not find that order’s voucher details.');
+
+    const previous = clean(row.passport_file);
+    await row.update({ passport_file: storedPathOf(req.file) });
+    if (previous) void discardDocument(previous);
+
+    ok(res, { hasPassportFile: true });
   }
 );

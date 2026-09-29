@@ -327,6 +327,47 @@ export const translationEnquiryFiles = multer({
   },
 }).array('documents', MAX_TRANSLATION_DOCUMENTS);
 
+/**
+ * Admin-authored uploads — Section images, the Doc Legalisation attachment,
+ * a Document Checklist file, a Russian voucher passport scan.
+ *
+ * Each gets its own instance rather than sharing `upload`/`manyFiles`,
+ * because those default to `directoryFor(req)` — one folder per *client*,
+ * keyed on `req.auth.sub`. That is the wrong owner for a file staff upload
+ * about an order or a fixed piece of site content: the admin's own id has
+ * nothing to do with whose passport scan this is, and every admin uploading
+ * to the same section would otherwise collide on nothing in particular. Each
+ * of these instead keys its directory on what the upload is actually about.
+ */
+export const adminSectionImageUpload = multer({
+  storage: new DocumentStorage({ directory: () => 'content/sections' }),
+  fileFilter,
+  limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
+}).single('image');
+
+export const adminDocLegalisationAttachmentUpload = multer({
+  storage: new DocumentStorage({ directory: () => 'settings/doc-legalisation' }),
+  fileFilter,
+  limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
+}).single('file');
+
+/** Keyed on the order id in the URL — `:id` on every route this is mounted under. */
+export const adminChecklistFileUpload = multer({
+  storage: new DocumentStorage({
+    directory: (req) => `orders/${String(req.params.id)}/checklist`,
+  }),
+  fileFilter,
+  limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
+}).single('file');
+
+export const adminVoucherPassportFileUpload = multer({
+  storage: new DocumentStorage({
+    directory: (req) => `orders/${String(req.params.id)}/voucher`,
+  }),
+  fileFilter,
+  limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
+}).single('file');
+
 /** Extension and size, for the `meta` line the portal renders. */
 export const describeFile = (
   filename: string | null,

@@ -82,6 +82,20 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     description:
       'One of the stored filenames the row itself carries — not an arbitrary path, the endpoint checks it belongs to that row.',
   },
+  rowId: {
+    name: 'rowId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description: 'One applicant’s own row id — not the application id.',
+  },
+  checklistId: {
+    name: 'checklistId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description: 'One `tbl_order_dl_checklist` row’s own id.',
+  },
   queue: {
     name: 'queue',
     in: 'path',
