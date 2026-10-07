@@ -1402,6 +1402,361 @@ export const adminPaths = {
     }),
   },
 
+  '/api/admin/orders/{id}/legalisation': {
+    get: operation('/api/admin/orders/{id}/legalisation', {
+      tag,
+      summary: 'Everything the Document Legalisation order screen renders',
+      description:
+        'Read-and-write counterpart of `GET /api/admin/orders/{id}/detail` for **document-legalisation orders only** (`order_type` 9) — any other order is a 404. Reproduces the legacy `viewDocLegalisationAction` screen: milestones, Ticket, both comment lanes, document-type tracker, Document Details, Contact, Checklist, Delivery, Billing and the Location option list.\n\n`comments` carries **both** lanes (`lane: "client"` is `is_admin` 0, emailed to the client; `lane: "admin"` is `is_admin` 1, CLS-internal). That is correct for this staff-only route and must never be copied to a client-facing one. `stamps` are ISO instants; `ticket.followUpDate`, `embassy.deliveredDate` are plain `YYYY-MM-DD`.\n\n`order.reference` is the client-facing portal reference (`CLS-000012`) that `/dashboard/orders/[reference]` is keyed by; `order.orderNo` is CLS’s own number.\n\n`order.isDhlCourier` is `tbl_visa_courier_options.s_dhl` for the order’s courier; the legacy DHL Label button additionally needs `delivery` state other than `ACT`.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The screen', { legalisation: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/ticket': {
+    patch: operation('/api/admin/orders/{id}/legalisation/ticket', {
+      tag,
+      summary: 'The main Update — milestones, Ticket, comments, embassy strip',
+      description:
+        '`multipart/form-data`. Reproduces the legacy `updateTicket`. Only fields present are written; `\'\'` clears a stamp or text field.\n\n**Milestone email:** the first changed stamp (received, submitted, completed, closed — in that order) sets `notification.scantype`. A stamp that is *cleared* is not a milestone. **`notification.suppress` is true when an admin comment was written** — legacy never emailed the client in that case. The backend sends no email; the caller builds it from `notification`.\n\n**Comments:** `clientComment` creates lane-0 note(s), one per `comment_attachment` file (the text repeated); `adminComment` creates lane-1 note(s) per `admin_attachment` file — confidential. Attachments are `.pdf/.png/.jpg/.jpeg` only (legacy `checkMediaTypeFromAttachment`); anything else is a 400 "File you are trying to upload is restricted and operation is aborted!!". An attachment with no comment text is a 400.\n\n**Auto-close:** when the closed stamp is set and every destination of the order is closed, `tbl_cls_order.status` becomes 2.\n\nThe follow-up date is written to both `tbl_order_follow_up_date` (this admin’s rows replaced) and `visa_follow_up_date`.',
+      auth: 'bearer',
+      body: {
+        contentType: 'multipart/form-data',
+        schema: body({
+          allItemsReceivedAtCLS: f.string('ISO-8601 instant, or empty to clear.'),
+          submittedForProcessing: f.string('ISO-8601 instant, or empty to clear.'),
+          completedReceivedAtCLS: f.string('ISO-8601 instant, or empty to clear.'),
+          orderOnRouteAndClosed: f.string('ISO-8601 instant, or empty to clear.'),
+          shippedBy: f.string(),
+          comNoteNo: f.string('Com Note Out.'),
+          comNoteIn: f.string(),
+          invoiceNo: f.string(),
+          signeeName: f.string(),
+          clientComment: f.string('Lane 0 — emailed to the client.'),
+          adminComment: f.string('Lane 1 — CLS-internal, confidential.'),
+          clsTeamMember: f.string('`tbl_user_admin.id`, or empty for none.'),
+          deliveredToEmbassy: { type: 'string', enum: ['1', '0'] },
+          embassyDeliveredDate: f.string('`YYYY-MM-DD`, or empty.'),
+          nextEmbassy: f.string(),
+          followUpDate: f.string('`YYYY-MM-DD`, or empty.'),
+          comment_attachment: {
+            type: 'array',
+            items: { type: 'string', format: 'binary' },
+            description: 'Lane-0 files, up to 10.',
+          },
+          admin_attachment: {
+            type: 'array',
+            items: { type: 'string', format: 'binary' },
+            description: 'Lane-1 files, up to 10.',
+          },
+        }),
+      },
+      responses: {
+        200: okObject('Saved', {
+          notification: { type: 'object' },
+          comments: { type: 'array', items: { type: 'object' } },
+        }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/details': {
+    patch: operation('/api/admin/orders/{id}/legalisation/details', {
+      tag,
+      summary: 'Document Details — destination, origin, type, reference',
+      description:
+        'Also sets `tbl_cls_order.destination` and `tbl_cls_order_destinations.country_id` to the new destination, as legacy did. Both countries must exist.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            destinationCountryId: f.int(),
+            nationalityId: f.int('The Origin select.'),
+            typeOfDocument: { type: 'integer', enum: [1, 2], description: '1 Commercial, 2 Personal.' },
+            refNo: f.string(),
+            comInvoiceNo: f.string('The Number field.'),
+          },
+          ['destinationCountryId', 'nationalityId', 'typeOfDocument', 'refNo', 'comInvoiceNo']
+        ),
+      },
+      responses: {
+        200: okObject('Saved', { details: { type: 'object' } }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/checklist': {
+    patch: operation('/api/admin/orders/{id}/legalisation/checklist', {
+      tag,
+      summary: 'Document Checklist — type, number and note per row',
+      description:
+        'Every `id` must be a `tbl_order_dl_checklist` row of this order; one foreign id rejects the whole request (404) and nothing is changed. Files are replaced by `PATCH /api/admin/orders/{id}/checklist/{checklistId}/file`.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            rows: {
+              type: 'array',
+              items: body(
+                {
+                  id: f.int(),
+                  type: f.string(),
+                  number: { type: 'integer', nullable: true },
+                  note: { type: 'string', nullable: true },
+                },
+                ['id', 'type']
+              ),
+            },
+          },
+          ['rows']
+        ),
+      },
+      responses: {
+        200: okObject('Saved', { checklist: { type: 'array', items: { type: 'object' } } }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/checklist/{checklistId}/file': {
+    get: operation('/api/admin/orders/{id}/legalisation/checklist/{checklistId}/file', {
+      tag,
+      summary: 'Stream a checklist row’s uploaded document',
+      description:
+        'The legacy "Show Uploaded Document" link. Ownership is checked: the row must belong to this order. Tries the stored path, then the legacy `dev/dl_documents/{orderId}_{file}` location.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The file' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/tracking': {
+    post: operation('/api/admin/orders/{id}/legalisation/tracking', {
+      tag,
+      summary: 'Add document-tracker history rows',
+      description:
+        'Each row is a NEW `tbl_order_notes` row (`is_admin` 1, `user_type` Admin) — legacy never edited one in place. `location` must be one of the region’s Location options (returned as `locations` by the screen read); `status` is `Delivered` or `Received`.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            rows: {
+              type: 'array',
+              items: body(
+                {
+                  documentType: f.string(),
+                  location: f.string(),
+                  price: { type: 'number' },
+                  status: { type: 'string', enum: ['Delivered', 'Received'] },
+                },
+                ['documentType', 'location', 'price', 'status']
+              ),
+            },
+          },
+          ['rows']
+        ),
+      },
+      responses: {
+        200: okObject('The tracker after the change', {
+          tracking: { type: 'array', items: { type: 'object' } },
+        }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/orders/{id}/legalisation/tracking', {
+      tag,
+      summary: 'Remove every tracker row of one document type on this order',
+      description:
+        'The legacy `remove` button. Scoped to this order — legacy deleted the document type across **every** order.',
+      auth: 'bearer',
+      query: [{ name: 'documentType', description: 'The exact document type.' }],
+      responses: {
+        200: okObject('The tracker after the change', {
+          tracking: { type: 'array', items: { type: 'object' } },
+        }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/tracking/{noteId}': {
+    delete: operation('/api/admin/orders/{id}/legalisation/tracking/{noteId}', {
+      tag,
+      summary: 'Remove one tracker history row',
+      description: 'The row must belong to this order (`tbl_order_notes.order_no`), else 404.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The tracker after the change', {
+          tracking: { type: 'array', items: { type: 'object' } },
+        }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/comments/{noteId}': {
+    patch: operation('/api/admin/orders/{id}/legalisation/comments/{noteId}', {
+      tag,
+      summary: 'Edit a destination comment',
+      description:
+        'The note must belong to this order’s destination (404 otherwise). **Lane gate:** lane 1 (admin comment) is always editable; lane 0 only when `user_type` is `Admin` — a client’s own reply is a 403.',
+      auth: 'bearer',
+      body: { schema: body({ comment: f.string() }, ['comment']) },
+      responses: {
+        200: okObject('Saved', { comment: { type: 'object' } }),
+        403: { $ref: '#/components/responses/Forbidden' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+    delete: operation('/api/admin/orders/{id}/legalisation/comments/{noteId}', {
+      tag,
+      summary: 'Delete a destination comment',
+      description:
+        'Same ownership and lane gate as the edit. The stored attachment file is left in place, as in legacy.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Deleted', { deleted: f.int() }),
+        403: { $ref: '#/components/responses/Forbidden' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/comments/{noteId}/attachment': {
+    get: operation('/api/admin/orders/{id}/legalisation/comments/{noteId}/attachment', {
+      tag,
+      summary: 'Stream a comment’s attachment (either lane)',
+      description:
+        'Staff only — lane 1 files are readable here and **nowhere** a client can reach (the portal’s own attachment route refuses `is_admin` 1). Ownership is checked against this order’s destination.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The file' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/signature': {
+    get: operation('/api/admin/orders/{id}/legalisation/signature', {
+      tag,
+      summary: 'Stream the order’s signature image',
+      description:
+        'For `ticket.signature.kind === "image"`: legacy `saveSignatureAction` stored the signature pad’s PNG at `dev/order_signature/{md5}_{orderId}_{destinationId}.png` and its bare name on the destination row. Staff only. The file served is always the one **this order’s destination row names** — never one taken from the URL — and a name that does not end `_{orderId}_{destinationId}`, or is an SVG, is refused with a 404. Stroke-JSON signatures are returned inline by `GET /legalisation` and have no file, so they 404 here.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The signature image' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/status': {
+    patch: operation('/api/admin/orders/{id}/legalisation/status', {
+      tag,
+      summary: 'Order Status and Payment Status in one save',
+      description:
+        'The legacy `updateStatus` form. `orderStatus` is `tbl_cls_order.status` (0 Pending, 1 Completed, 2 Cls Confirmed); `paymentStatus` is `tbl_payment.s_paid` (0 Pending, 1 Paid - Online; 2 Paid by account is accepted but not offered by the DL screen). Needs a payment row — 409 otherwise, before anything is written. One audit line per field that actually changed.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            orderStatus: { type: 'integer', enum: [0, 1, 2] },
+            paymentStatus: { type: 'integer', enum: [0, 1, 2] },
+          },
+          ['orderStatus', 'paymentStatus']
+        ),
+      },
+      responses: {
+        200: okObject('Saved', {
+          orderId: f.int(),
+          orderStatus: f.int(),
+          paymentStatus: f.int(),
+        }),
+        404: { $ref: '#/components/responses/NotFound' },
+        409: { description: 'No payment record on this order.' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/payment-status': {
+    patch: operation('/api/admin/orders/{id}/legalisation/payment-status', {
+      tag,
+      summary: 'Payment Status alone',
+      description: 'Writes `tbl_payment.s_paid` only. See the combined `…/status` route.',
+      auth: 'bearer',
+      body: {
+        schema: body({ paymentStatus: { type: 'integer', enum: [0, 1, 2] } }, [
+          'paymentStatus',
+        ]),
+      },
+      responses: {
+        200: okObject('Saved', { orderId: f.int(), paymentStatus: f.int() }),
+        404: { $ref: '#/components/responses/NotFound' },
+        409: { description: 'No payment record on this order.' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/address-confirmation/acknowledge': {
+    post: operation(
+      '/api/admin/orders/{id}/legalisation/address-confirmation/acknowledge',
+      {
+        tag,
+        summary: 'Discard Notification — hide the "client confirmed the address" banner',
+        description:
+          'Sets `tbl_cls_order.is_address_confirmed` from 1 to 2. Idempotent: any other current value is left alone and `changed` is false.',
+        auth: 'bearer',
+        responses: {
+          200: okObject('Done', {
+            orderId: f.int(),
+            addressConfirmed: f.int(),
+            changed: f.bool(),
+          }),
+          404: { $ref: '#/components/responses/NotFound' },
+        },
+      }
+    ),
+  },
+
+  '/api/admin/orders/{id}/legalisation/address-confirmation': {
+    get: operation('/api/admin/orders/{id}/legalisation/address-confirmation', {
+      tag,
+      summary: 'Data for the address-confirmation email',
+      description:
+        'What the legacy `sendClientAddressConfirmationEmailAction` read: the client’s email (the order contact email, or the account email when the order is bulk), names, return address and the destination’s display name. The backend has no mailer — the Next route sends it.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The data', { confirmation: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/legalisation/print/{sheet}': {
+    get: operation('/api/admin/orders/{id}/legalisation/print/{sheet}', {
+      tag,
+      summary: 'Data for a printable sheet',
+      description:
+        'The legacy PHP print scripts are not in this repository, so these are designed sheets rather than ports: `return-address` (the client’s return address as a label), `embassy-to-from` (CLS to the destination embassy, from the `tbl_countries` record) and `order-label`.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The sheet', { print: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
   '/api/admin/queues/{queue}': {
     get: operation('/api/admin/queues/{queue}', {
       tag,

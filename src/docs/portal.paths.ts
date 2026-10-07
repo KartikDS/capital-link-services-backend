@@ -116,6 +116,37 @@ export const portalPaths = {
     }),
   },
 
+  '/api/portal/orders/{reference}/confirm-address': {
+    get: operation('/api/portal/orders/{reference}/confirm-address', {
+      tag,
+      summary: 'Where the return-address confirmation stands',
+      description:
+        'The return address recorded on the order and whether it has been confirmed. `status` is `pending`, `confirmed` or `dismissed` (a consultant discarded the request). Owner only: someone else’s reference answers 404, the same as one that does not exist. A legacy `tbl_orders` row has no flag and answers 400.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The confirmation state', {
+          confirmation: { type: 'object' },
+        }),
+        400: { description: 'The order does not carry a return-address confirmation' },
+      },
+    }),
+    post: operation('/api/portal/orders/{reference}/confirm-address', {
+      tag,
+      summary: 'Confirm the order’s return address',
+      description:
+        'Sets `tbl_cls_order.is_address_confirmed` to 1 **only if it is currently 0 or unset**; 1 and 2 are left alone, so repeating the call is harmless and a late click on an old email cannot reopen a request the consultant dismissed. `changed` says whether this call did the write. Returns the return address from `tbl_order_return_document_details`. Owner only.' +
+        '\n\nThis is the order-level flag. Changing a profile address resets the separate client-level flag on `tbl_user_client`; that is unaffected.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Confirmed (or already was)', {
+          confirmation: { type: 'object' },
+        }),
+        400: { description: 'The order does not carry a return-address confirmation' },
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
   '/api/portal/stats': {
     get: operation('/api/portal/stats', {
       tag,

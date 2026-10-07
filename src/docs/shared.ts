@@ -89,6 +89,21 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     schema: { type: 'integer' },
     description: 'One applicant’s own row id — not the application id.',
   },
+  noteId: {
+    name: 'noteId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description:
+      'A note’s own row id — a `tbl_order_destination_notes` comment or a `tbl_order_notes` tracker row, depending on the route. Checked against the order in the path.',
+  },
+  sheet: {
+    name: 'sheet',
+    in: 'path',
+    required: true,
+    schema: { type: 'string', enum: ['return-address', 'embassy-to-from', 'order-label'] },
+    description: 'Which printable sheet.',
+  },
   checklistId: {
     name: 'checklistId',
     in: 'path',

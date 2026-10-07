@@ -167,7 +167,7 @@ interface DocumentStorageOptions {
    * May be async, because an order's folder depends on who owns the order and
    * that is a database read. A rejection fails the upload before a byte is stored.
    */
-  directory?: (req: Request) => string | Promise<string>;
+  directory?: (req: Request, file: Express.Multer.File) => string | Promise<string>;
   /**
    * How a stored file is named. Defaults to `storedName`; the translation
    * enquiry's engine passes the shorter one, because five of its names have to
@@ -189,7 +189,7 @@ class DocumentStorage implements StorageEngine {
     // order's owner is looked up — busboy pauses on backpressure rather than
     // dropping bytes.
     Promise.resolve()
-      .then(() => (this.options.directory ?? directoryFor)(req))
+      .then(() => (this.options.directory ?? directoryFor)(req, file))
       .then((directory) => {
         const filename = (this.options.name ?? storedName)(file.originalname);
         const storedPath = `${directory}/${filename}`;
@@ -419,6 +419,95 @@ export const orderFileUpload = (folderFor: (req: Request) => Promise<string>) =>
     fileFilter,
     limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
   }).single('file');
+
+/**
+ * The form fields the Document Legalisation order screen posts its comment
+ * attachments on — one per lane of `tbl_order_destination_notes`.
+ *
+ * `comment_attachment` is lane 0 (the "Client comment", emailed to the client and
+ * visible in their portal); `admin_attachment` is lane 1 (the "Admin comment",
+ * CLS-internal and confidential). The names are the legacy form's own.
+ */
+export const LEGALISATION_NOTE_FIELDS = {
+  client: 'comment_attachment',
+  admin: 'admin_attachment',
+} as const;
+
+/** The sub-folders of the order's folder the two lanes' files are kept in. */
+export const LEGALISATION_NOTE_FOLDERS = {
+  client: 'notes',
+  admin: 'internal',
+} as const;
+
+/**
+ * The only types legacy `checkMediaTypeFromAttachment` lets through on a comment
+ * attachment: `image/png`, `image/jpeg`, `image/jpg`, `application/pdf`.
+ *
+ * Narrower than the general allowlist on purpose — a consultant's comment
+ * attachment never accepted Word documents or HEIC photos in the old screen, and
+ * "the same as before" is the brief. The legacy check sniffed the file's bytes
+ * with `mime_content_type`; this one requires the extension and the MIME type the
+ * browser reported to agree, which is the same standard every other upload here
+ * is held to.
+ */
+const LEGALISATION_NOTE_TYPES: Record<string, readonly string[]> = {
+  '.png': ['image/png'],
+  '.jpg': ['image/jpeg', 'image/jpg'],
+  '.jpeg': ['image/jpeg', 'image/jpg'],
+  '.pdf': ['application/pdf'],
+};
+
+/** The legacy wording, verbatim. */
+export const LEGALISATION_NOTE_RESTRICTED =
+  'File you are trying to upload is restricted and operation is aborted!!';
+
+/** Exported so the allow-list can be asserted without a multipart request. */
+export const legalisationNoteFilter = (
+  _req: Request,
+  file: Express.Multer.File,
+  callback: FileFilterCallback
+): void => {
+  const permitted = LEGALISATION_NOTE_TYPES[path.extname(file.originalname).toLowerCase()];
+
+  if (!permitted || !permitted.includes(file.mimetype.toLowerCase())) {
+    callback(badRequest(LEGALISATION_NOTE_RESTRICTED));
+    return;
+  }
+
+  callback(null, true);
+};
+
+/**
+ * Comment attachments on a Document Legalisation order, both lanes in one request.
+ *
+ * One multer instance because both lanes arrive in the same multipart body and a
+ * second instance would find the first one's fields "unexpected" — but the two
+ * lanes are kept apart on disk (`{clientId}/{orderId}/notes` and `…/internal`) so
+ * the confidential lane's files never share a folder with the client-facing
+ * ones. Its own instance, not `upload`: that one keys its directory on the
+ * *client's* id, the wrong owner for a file a consultant attaches to an order.
+ */
+export const legalisationNoteUpload = (folderFor: (req: Request) => Promise<string>) => {
+  const orderFolderOnce = oncePerRequest(folderFor);
+
+  return multer({
+    storage: new DocumentStorage({
+      directory: async (req, file) => {
+        const base = await orderFolderOnce(req);
+        return `${base}/${
+          file.fieldname === LEGALISATION_NOTE_FIELDS.admin
+            ? LEGALISATION_NOTE_FOLDERS.admin
+            : LEGALISATION_NOTE_FOLDERS.client
+        }`;
+      },
+    }),
+    fileFilter: legalisationNoteFilter,
+    limits: { fileSize: env.uploads.maxBytes, files: 20, fields: 40 },
+  }).fields([
+    { name: LEGALISATION_NOTE_FIELDS.client, maxCount: 10 },
+    { name: LEGALISATION_NOTE_FIELDS.admin, maxCount: 10 },
+  ]);
+};
 
 /**
  * The passport photo on a client's account — a file with an owner but no order, so

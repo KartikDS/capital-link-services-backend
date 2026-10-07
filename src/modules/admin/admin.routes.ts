@@ -34,6 +34,7 @@ import {
 import { orderIdFromReference } from '../../domain/orderReference';
 import * as orderService from '../orders/orders.service';
 import { orderDetailRoutes } from './orderDetail';
+import { legalisationOrderRoutes } from './legalisationOrder';
 import { contentPageAdminRoutes, sectionAdminRoutes } from './content';
 import {
   courierOptionAdminRoutes,
@@ -1197,6 +1198,13 @@ adminRoutes.use('/queues', queueRoutes);
  * are matched first.
  */
 adminRoutes.use('/orders', orderDetailRoutes);
+
+/**
+ * The Document Legalisation order screen: `/orders/:id/legalisation…`. Takes the
+ * audit writer as an argument because `audit` is private to this file and this
+ * file is what imports the router.
+ */
+adminRoutes.use('/orders', legalisationOrderRoutes(audit));
 
 /**
  * Full CRUD for clients, staff, embassy and TPN accounts — the legacy sidebar's

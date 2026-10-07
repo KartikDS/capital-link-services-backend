@@ -28,6 +28,8 @@ import {
 } from '../orders/orders.documentFolders';
 import * as orderWrites from '../orders/orders.writes';
 import * as orderService from '../orders/orders.service';
+import { referenceParamSchema } from '../orders/orders.schemas';
+import * as addressConfirmation from './portal.addressConfirmation';
 import * as service from './portal.service';
 
 /**
@@ -157,6 +159,42 @@ portalRoutes.get('/orders', async (req: Request, res: Response) => {
     counts,
   });
 });
+
+/**
+ * GET and POST /api/portal/orders/:reference/confirm-address
+ *
+ * The client's answer to the "please confirm the return address" email. Owner
+ * only — see `portal.addressConfirmation` — and the POST is idempotent.
+ */
+portalRoutes.get(
+  '/orders/:reference/confirm-address',
+  validate(referenceParamSchema, 'params'),
+  async (req: Request, res: Response) => {
+    const { reference } = validParams<{ reference: string }>(req);
+
+    ok(res, {
+      confirmation: await addressConfirmation.addressConfirmationState(
+        currentUserId(req),
+        reference
+      ),
+    });
+  }
+);
+
+portalRoutes.post(
+  '/orders/:reference/confirm-address',
+  validate(referenceParamSchema, 'params'),
+  async (req: Request, res: Response) => {
+    const { reference } = validParams<{ reference: string }>(req);
+
+    ok(res, {
+      confirmation: await addressConfirmation.confirmAddress(
+        currentUserId(req),
+        reference
+      ),
+    });
+  }
+);
 
 portalRoutes.get('/stats', async (req: Request, res: Response) => {
   ok(res, { stats: await service.stats(currentUserId(req)) });
