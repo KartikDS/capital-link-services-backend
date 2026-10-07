@@ -1,4 +1,4 @@
-import { Op, type WhereOptions } from 'sequelize';
+import { Op, type FindOptions, type WhereOptions } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../../models';
 import { paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
+import { cached } from '../../shared/ttlCache';
 import { toIso } from '../../shared/dates';
 import { clean } from '../../shared/text';
 import { validate, validParams, validQuery } from '../../shared/validation';
@@ -62,9 +63,7 @@ const QUEUE_TYPE = {
 type QueueName = keyof typeof QUEUE_TYPE;
 
 const queueParam = z.object({
-  queue: z.enum(
-    Object.keys(QUEUE_TYPE) as [QueueName, ...QueueName[]]
-  ),
+  queue: z.enum(Object.keys(QUEUE_TYPE) as [QueueName, ...QueueName[]]),
 });
 
 const queueQuery = z.object({
@@ -88,6 +87,7 @@ const primaryTraveller = {
   model: OrderTravellerDetails,
   as: 'travellers',
   required: false,
+  separate: true,
   where: { is_primary: 1 },
 } as const;
 
@@ -116,8 +116,40 @@ const searchWhere = (
 };
 
 const firstTraveller = (row: ClsOrder) =>
-  (row as unknown as { travellers?: { first_name: string | null; last_name: string | null }[] })
-    .travellers?.[0] ?? null;
+  (
+    row as unknown as {
+      travellers?: { first_name: string | null; last_name: string | null }[];
+    }
+  ).travellers?.[0] ?? null;
+
+/** How long a queue's total is reused. See `shared/ttlCache`. */
+const COUNT_TTL_MS = 60_000;
+
+/**
+ * One page of a queue, and the total behind it.
+ *
+ * The total is counted on `tbl_cls_order` alone. The includes are all LEFT
+ * JOINs to child tables, so they cannot change how many orders there are — but
+ * they made the count take ~14s on the legalisation queue, because those child
+ * tables have no index on `order_id`. The child rows are loaded with
+ * `separate: true` for just the page's ids instead of joined across the whole
+ * table.
+ *
+ * Even on the orders table alone the count is a full scan (no index on
+ * `order_type`), so the total is cached for a minute per queue and search. The
+ * page of rows is always read live.
+ */
+const findPage = async (
+  options: FindOptions
+): Promise<{ rows: ClsOrder[]; count: number }> => {
+  const [count, rows] = await Promise.all([
+    cached(`queue-count:${JSON.stringify(options.where)}`, COUNT_TTL_MS, () =>
+      ClsOrder.count({ where: options.where })
+    ),
+    ClsOrder.findAll(options),
+  ]);
+  return { rows, count };
+};
 
 /**
  * GET /api/admin/queues/:queue
@@ -150,7 +182,7 @@ queueRoutes.get(
        * filter. This queue deliberately shows unplaced orders too, which is why
        * the screenshot of it carries rows reading "Pending".
        */
-      const { rows, count } = await ClsOrder.findAndCountAll({
+      const { rows, count } = await findPage({
         where: { order_type: orderType, ...searchWhere(search, ['order_no']) },
         include: [
           primaryTraveller,
@@ -163,7 +195,6 @@ queueRoutes.get(
         order: [['id', 'DESC']],
         limit: page.limit,
         offset: page.offset,
-        distinct: true,
       });
 
       return paged(
@@ -194,7 +225,7 @@ queueRoutes.get(
        * half-finished public visa never reaches this screen, which is why its
        * counts are lower than the police clearance queue's on the same data.
        */
-      const { rows, count } = await ClsOrder.findAndCountAll({
+      const { rows, count } = await findPage({
         where: {
           order_type: orderType,
           date_submitted: { [Op.ne]: null },
@@ -208,7 +239,6 @@ queueRoutes.get(
         order: [['id', 'DESC']],
         limit: page.limit,
         offset: page.offset,
-        distinct: true,
       });
 
       return paged(
@@ -238,7 +268,7 @@ queueRoutes.get(
 
     if (queue === 'russian-visa-voucher') {
       /** `russianVisaVoucherListAction`. */
-      const { rows, count } = await ClsOrder.findAndCountAll({
+      const { rows, count } = await findPage({
         where: { order_type: orderType, ...searchWhere(search, ['order_no']) },
         include: [
           primaryTraveller,
@@ -251,7 +281,6 @@ queueRoutes.get(
         order: [['id', 'DESC']],
         limit: page.limit,
         offset: page.offset,
-        distinct: true,
       });
 
       return paged(
@@ -290,26 +319,22 @@ queueRoutes.get(
        * The only queue that reads the contact name off the order itself rather
        * than a traveller row — a courier booking has no applicant.
        */
-      const { rows, count } = await ClsOrder.findAndCountAll({
+      const { rows, count } = await findPage({
         where: {
           order_type: orderType,
-          ...searchWhere(search, [
-            'order_no',
-            'contact_first_name',
-            'contact_last_name',
-          ]),
+          ...searchWhere(search, ['order_no', 'contact_first_name', 'contact_last_name']),
         },
         include: [
           {
             model: OrderDocDeliveryDetails,
             as: 'docDeliveryDetails',
             required: false,
+            separate: true,
           },
         ],
         order: [['id', 'DESC']],
         limit: page.limit,
         offset: page.offset,
-        distinct: true,
       });
 
       return paged(
@@ -363,14 +388,10 @@ queueRoutes.get(
      * Its status filter is commented out in the legacy source, so every
      * legalisation order appears here whatever its state. Left that way.
      */
-    const { rows, count } = await ClsOrder.findAndCountAll({
+    const { rows, count } = await findPage({
       where: {
         order_type: orderType,
-        ...searchWhere(search, [
-          'order_no',
-          'contact_first_name',
-          'contact_last_name',
-        ]),
+        ...searchWhere(search, ['order_no', 'contact_first_name', 'contact_last_name']),
       },
       include: [
         { model: Countries, as: 'destinationCountry', required: false },
@@ -378,17 +399,18 @@ queueRoutes.get(
           model: DocumentLegalizationOrderDetails,
           as: 'legalisationDetails',
           required: false,
+          separate: true,
         },
         {
           model: OrderReturnDocumentDetails,
           as: 'returnDocumentDetails',
           required: false,
+          separate: true,
         },
       ],
       order: [['id', 'DESC']],
       limit: page.limit,
       offset: page.offset,
-      distinct: true,
     });
 
     return paged(

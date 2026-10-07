@@ -52,6 +52,7 @@ import { saudiInvitationLetterAdminRoutes } from './saudiInvitationLetters';
 import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
 import { queueRoutes } from './queues';
+import { cached } from '../../shared/ttlCache';
 
 /**
  * The back office. Staff tokens only.
@@ -106,14 +107,7 @@ const audit = async (
 // Dashboard
 // ---------------------------------------------------------------------------
 
-/**
- * GET /api/admin/dashboard
- *
- * Counts rather than lists. Each is a `COUNT(*)` with a `WHERE`, run in
- * parallel — which is cheap even against five years of rows, and much cheaper
- * than pulling the rows back to count them here.
- */
-adminRoutes.get('/dashboard', async (_req: Request, res: Response) => {
+const readDashboardMetrics = async () => {
   const [
     pendingOrders,
     completedOrders,
@@ -137,16 +131,29 @@ adminRoutes.get('/dashboard', async (_req: Request, res: Response) => {
     ClsOrderDocuments.count({ where: { status: DOCUMENT_STATUS.UPLOADED } }),
   ]);
 
-  ok(res, {
-    metrics: {
-      pendingOrders,
-      completedOrders,
-      unpaidOrders,
-      newEnquiries,
-      clientsTotal,
-      documentsAwaitingReview,
-    },
-  });
+  return {
+    pendingOrders,
+    completedOrders,
+    unpaidOrders,
+    newEnquiries,
+    clientsTotal,
+    documentsAwaitingReview,
+  };
+};
+
+/**
+ * GET /api/admin/dashboard
+ *
+ * Counts rather than lists. Each is a `COUNT(*)` with a `WHERE`, run in
+ * parallel — which is cheap even against five years of rows, and much cheaper
+ * than pulling the rows back to count them here.
+ *
+ * Cached for 30s: the rail reads this on every back-office screen, and with no
+ * index on the filtered columns each of the six counts is a table scan.
+ */
+adminRoutes.get('/dashboard', async (_req: Request, res: Response) => {
+  const metrics = await cached('dashboard-metrics', 30_000, readDashboardMetrics);
+  ok(res, { metrics });
 });
 
 // ---------------------------------------------------------------------------
