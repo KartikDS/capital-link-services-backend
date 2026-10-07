@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream';
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -200,6 +201,27 @@ export const objectExists = async (storedPath: string): Promise<boolean> => {
     if (isMissing(error)) return false;
     throw error;
   }
+};
+
+/**
+ * Copies an object inside the bucket, without downloading it.
+ *
+ * Used when a guest's documents are moved into the client's folder once the
+ * account exists. S3 has no rename, so a move is this followed by a delete — and
+ * the caller deletes the original only after the database points at the copy.
+ * `encodeURI` on the source because the key may carry the configured prefix.
+ */
+export const copyObject = async (args: {
+  fromPath: string;
+  toPath: string;
+}): Promise<void> => {
+  await s3().send(
+    new CopyObjectCommand({
+      Bucket: required().bucket,
+      CopySource: encodeURI(`${required().bucket}/${objectKey(args.fromPath)}`),
+      Key: objectKey(args.toPath),
+    })
+  );
 };
 
 /**

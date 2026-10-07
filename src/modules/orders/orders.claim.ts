@@ -2,6 +2,7 @@ import type { Transaction } from 'sequelize';
 import { sequelize } from '../../config/database';
 import { ClsOrder, OrderTravellerDetails } from '../../models';
 import * as authRepository from '../auth/auth.repository';
+import { filePendingDocuments } from './orders.documentFolders';
 import { findClsOrderIdByReference } from './orders.repository';
 import { CLIENT_TYPE } from '../../domain/codes';
 import { generatePassword, hashPassword } from '../../shared/passwords';
@@ -169,7 +170,7 @@ export const claim = async (reference: string): Promise<ClaimResult> => {
     return nothing('unknown-order');
   }
 
-  return sequelize.transaction(async (transaction) => {
+  const result = await sequelize.transaction(async (transaction) => {
     const order = await ClsOrder.findByPk(orderId, {
       // The lock that makes this safe to call twice at once. See the note above.
       lock: transaction.LOCK.UPDATE,
@@ -283,4 +284,28 @@ export const claim = async (reference: string): Promise<ClaimResult> => {
       password,
     };
   });
+
+  /**
+   * Files the order's waiting documents under the client, now that there is one.
+   *
+   * After the transaction, not inside it: moving a file is a bucket write that no
+   * rollback can undo. Run whenever the order has a client — including "already
+   * claimed" — so a move that failed on an earlier call is retried by the next
+   * one. A failure is logged and swallowed, because the order is claimed and paid
+   * either way and the file simply stays in `incoming/`, where it is still served.
+   */
+  if (result.clientId !== null) {
+    try {
+      await filePendingDocuments(orderId, result.clientId);
+    } catch (error) {
+      logger.warn('Could not file a claimed order’s documents under its client', {
+        reference,
+        orderId,
+        clientId: result.clientId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return result;
 };

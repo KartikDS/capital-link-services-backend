@@ -24,7 +24,7 @@ import { logger } from '../../shared/logger';
  *
  * `POST /` accepts files with no order attached, which the portal uses when a
  * client drops documents in before choosing which job they belong to. They land
- * in an `unassigned` directory and are **not recorded in the database** — there
+ * in the client's own `{clientId}/unattached` folder and are **not recorded in the database** — there
  * is no table for a file with no owner, and inventing one would be DDL. The
  * response returns the stored paths, and the client attaches them to an order in
  * a second call. Anything never attached is orphaned on disk, which is why the

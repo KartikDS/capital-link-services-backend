@@ -12,7 +12,7 @@ import {
 } from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
 import { internalOnly } from '../../middleware/requestContext';
-import { manyFiles } from '../../middleware/upload';
+import { orderDocumentsUpload } from '../../middleware/upload';
 import { badRequest, notFound } from '../../shared/errors';
 import { created, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
@@ -27,6 +27,7 @@ import {
 } from '../../domain/quotes';
 import * as claimService from './orders.claim';
 import * as confirmations from './orders.confirmations';
+import { documentFolderOf, referenceFromForm } from './orders.documentFolders';
 import * as lodge from './orders.lodge';
 import * as schemas from './orders.schemas';
 import * as service from './orders.service';
@@ -630,11 +631,27 @@ const journeyDocumentsSchema = z.object({
  * show the client something honest. A silent 200 would leave the website
  * believing the scans were stored.
  */
+/**
+ * Files the scans under the order's client — `{clientId}/{orderId}/` — or, for a
+ * guest whose account does not exist yet, under `incoming/{orderId}/` until the
+ * claim moves them. Resolved from the `reference` field while the files arrive, so
+ * an unknown order is refused before anything is stored.
+ */
+const journeyDocumentsUpload = orderDocumentsUpload(async (req) => {
+  const resolved = await service.resolve(referenceFromForm(req));
+
+  if (!resolved) {
+    throw notFound('We could not find that order, so there is nowhere to store these files.');
+  }
+
+  return documentFolderOf(resolved);
+});
+
 orderRoutes.post(
   '/documents',
   internalOnly,
   limits.upload,
-  manyFiles,
+  journeyDocumentsUpload,
   validate(journeyDocumentsSchema),
   async (req: Request, res: Response) => {
     const body = req.body as z.infer<typeof journeyDocumentsSchema>;
@@ -873,7 +890,9 @@ referenceRoutes.get(
 referenceRoutes.post(
   '/documents',
   limits.upload,
-  manyFiles,
+  // Ownership is checked here, before any file is stored, and the files land in
+  // the order's own folder — the same one the client's checkout uploads went to.
+  orderDocumentsUpload(async (req) => documentFolderOf(await resolveFromParams(req))),
   async (req: Request, res: Response) => {
     const resolved = await resolveFromParams(req);
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];

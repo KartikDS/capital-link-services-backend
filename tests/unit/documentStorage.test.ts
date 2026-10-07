@@ -628,3 +628,83 @@ describe('the bucket and the disk together', () => {
     );
   });
 });
+
+/**
+ * Copying a stored document to a new path.
+ *
+ * The first half of filing a guest's documents under their client once the
+ * account exists. On the local driver against a temporary directory, so no bucket
+ * is reached and nothing outside the temp directory is touched.
+ */
+describe('copyDocument, on the local driver', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'cls-copy-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const localStorage = () => load({ ...UNCONFIGURED, UPLOAD_DIR: root });
+
+  it('copies the file and leaves the original where it was', async () => {
+    const storage = await localStorage();
+
+    await storage.saveDocument({
+      storedPath: 'incoming/1482/1755-aaa-passport.pdf',
+      stream: streamOf('a scanned passport'),
+      contentType: 'application/pdf',
+    });
+
+    const copied = await storage.copyDocument(
+      'incoming/1482/1755-aaa-passport.pdf',
+      '77/1482/1755-aaa-passport.pdf'
+    );
+
+    expect(copied).toEqual(['local']);
+    expect(fs.readFileSync(path.join(root, '77', '1482', '1755-aaa-passport.pdf'), 'utf8')).toBe(
+      'a scanned passport'
+    );
+    // Not a move: the caller deletes the original only after the row is updated.
+    expect(fs.existsSync(path.join(root, 'incoming', '1482', '1755-aaa-passport.pdf'))).toBe(true);
+  });
+
+  it('copies nothing when the source is not there', async () => {
+    const storage = await localStorage();
+
+    expect(await storage.copyDocument('incoming/1482/missing.pdf', '77/1482/missing.pdf')).toEqual(
+      []
+    );
+    expect(fs.existsSync(path.join(root, '77'))).toBe(false);
+  });
+
+  it('never overwrites a file already at the target', async () => {
+    const storage = await localStorage();
+
+    await storage.saveDocument({
+      storedPath: 'incoming/1482/x.pdf',
+      stream: streamOf('the waiting one'),
+      contentType: 'application/pdf',
+    });
+    await storage.saveDocument({
+      storedPath: '77/1482/x.pdf',
+      stream: streamOf('already filed'),
+      contentType: 'application/pdf',
+    });
+
+    expect(await storage.copyDocument('incoming/1482/x.pdf', '77/1482/x.pdf')).toEqual([]);
+    expect(fs.readFileSync(path.join(root, '77', '1482', 'x.pdf'), 'utf8')).toBe('already filed');
+  });
+
+  it.each([
+    ['../outside.pdf', '77/1482/x.pdf'],
+    ['incoming/1482/x.pdf', '../../outside.pdf'],
+    ['/etc/passwd', '77/1482/x.pdf'],
+  ])('refuses an unsafe path (%s → %s)', async (from, to) => {
+    const storage = await localStorage();
+
+    expect(await storage.copyDocument(from, to)).toEqual([]);
+  });
+});

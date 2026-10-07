@@ -4,7 +4,11 @@ import { z } from 'zod';
 import { env } from '../../config/env';
 import { authenticate, currentUserId } from '../../middleware/authenticate';
 import { limits } from '../../middleware/rateLimit';
-import { ALLOWED_EXTENSIONS, manyFiles, singleFile } from '../../middleware/upload';
+import {
+  ALLOWED_EXTENSIONS,
+  orderDocumentsUpload,
+  profilePhotoUpload,
+} from '../../middleware/upload';
 import {
   documentStorageDriver,
   openDocument,
@@ -18,6 +22,10 @@ import { pageMeta, readPage } from '../../shared/http/pagination';
 import { streamDocument } from '../../shared/http/streamDocument';
 import { addressSchema, validate, validParams, validQuery } from '../../shared/validation';
 import { logger } from '../../shared/logger';
+import {
+  documentFolderOf,
+  referenceFromForm,
+} from '../orders/orders.documentFolders';
 import * as orderWrites from '../orders/orders.writes';
 import * as orderService from '../orders/orders.service';
 import * as service from './portal.service';
@@ -196,22 +204,20 @@ portalRoutes.get(
 portalRoutes.post(
   '/documents',
   limits.upload,
-  manyFiles,
+  // The order is resolved — and its owner checked — while the files arrive, so a
+  // client cannot store a file against someone else's order and the file is filed
+  // straight into `{clientId}/{orderId}/`. `reference` has to precede the files.
+  orderDocumentsUpload(async (req) =>
+    documentFolderOf(
+      await orderService.resolveForClient(referenceFromForm(req), currentUserId(req))
+    )
+  ),
   async (req: Request, res: Response) => {
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) throw badRequest('Choose at least one file to upload.');
 
-    const body = req.body as { reference?: string };
-    const reference = body.reference?.trim();
-
-    if (!reference) {
-      throw badRequest(
-        'Tell us which order these documents are for — we store documents against an order.'
-      );
-    }
-
     const resolved = await orderService.resolveForClient(
-      reference,
+      referenceFromForm(req),
       currentUserId(req)
     );
 
@@ -330,7 +336,7 @@ portalRoutes.get('/passport-photos', async (req: Request, res: Response) => {
 portalRoutes.post(
   '/passport-photos',
   limits.upload,
-  singleFile,
+  profilePhotoUpload,
   async (req: Request, res: Response) => {
     const file = req.file;
     if (!file) throw badRequest('Choose a photo to upload.');

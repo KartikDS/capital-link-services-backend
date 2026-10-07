@@ -10,7 +10,14 @@ import { pipeline } from 'node:stream/promises';
 import { env } from '../../config/env';
 import { contentTypeFor } from '../../domain/documentFormats';
 import { logger } from '../logger';
-import { deleteObject, getObject, objectExists, putObject, s3Configured } from './s3';
+import {
+  copyObject,
+  deleteObject,
+  getObject,
+  objectExists,
+  putObject,
+  s3Configured,
+} from './s3';
 
 /**
  * Where a client's documents are kept, and how they are read back.
@@ -407,6 +414,56 @@ export const saveDocument = async (args: {
     absolutePath: disk.status === 'fulfilled' ? absolutePath : null,
     copies,
   };
+};
+
+/**
+ * Copies a stored document to a new path, in every place it is held.
+ *
+ * The first half of moving a document — the caller updates the database and only
+ * then `discardDocument`s the original, so a failure at any step leaves the row
+ * pointing at a file that exists. Returns where a copy was made; empty means
+ * nothing could be copied and the caller must leave the original alone.
+ *
+ * The `legacy` copy is never touched: that directory is the old application's, and
+ * a stored path under it is not one this API writes.
+ */
+export const copyDocument = async (
+  fromPath: string,
+  toPath: string
+): Promise<DocumentLocation[]> => {
+  const from = safeStoredPath(fromPath);
+  const to = safeStoredPath(toPath);
+
+  if (!from || !to) return [];
+
+  const copied: DocumentLocation[] = [];
+
+  for (const location of await locateDocument(from)) {
+    try {
+      if (location === 's3') {
+        await copyObject({ fromPath: asKey(from), toPath: asKey(to) });
+        copied.push('s3');
+      } else if (location === 'local') {
+        const source = resolveUploadPath(from);
+        const target = resolveUploadPath(to);
+
+        if (!source || !target) continue;
+
+        await fs.promises.mkdir(path.dirname(target), { recursive: true });
+        await fs.promises.copyFile(source, target, fs.constants.COPYFILE_EXCL);
+        copied.push('local');
+      }
+    } catch (error) {
+      logger.warn('Could not copy a copy of a document to its new path', {
+        from,
+        to,
+        location,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return copied;
 };
 
 /**

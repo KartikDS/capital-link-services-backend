@@ -14,6 +14,7 @@ import {
   TRANSLATION_SLUG_MAX,
 } from '../domain/translationDocuments';
 import { discardDocument, saveDocument } from '../shared/storage/documents';
+import { clientFolder } from '../shared/storage/documentFolders';
 import { badRequest } from '../shared/errors';
 
 /**
@@ -128,17 +129,16 @@ export const translationStoredName = (originalName: string): string => {
 };
 
 /**
- * The directory segment a request's uploads belong under.
+ * The directory segment an upload with no order belongs under.
  *
- * One per client, so neither a bucket listing nor a directory listing puts every
- * client's documents side by side, and a mistaken bulk delete is bounded. A
- * request with no session — a guest lodging an order through the internal
- * documents endpoint — lands in `unassigned`, and the row that records it is what
- * ties it to an order.
+ * `{clientId}/unattached`, so the client's files stay inside their own folder even
+ * before they say which order they are for. A request with no session lands in
+ * `unassigned`. Uploads that *do* belong to an order never use this — they are
+ * filed by `orderDocumentsUpload` under `{clientId}/{orderId}`.
  */
 const directoryFor = (req: Request): string => {
   const owner = req.auth?.sub;
-  return owner ? `clients/${String(owner)}` : 'unassigned';
+  return owner ? clientFolder(String(owner), 'unattached') : 'unassigned';
 };
 
 /**
@@ -163,8 +163,11 @@ interface DocumentStorageOptions {
   /**
    * The directory segment this engine's uploads belong under. Defaults to
    * `directoryFor` — one per signed-in client, `unassigned` for a guest.
+   *
+   * May be async, because an order's folder depends on who owns the order and
+   * that is a database read. A rejection fails the upload before a byte is stored.
    */
-  directory?: (req: Request) => string;
+  directory?: (req: Request) => string | Promise<string>;
   /**
    * How a stored file is named. Defaults to `storedName`; the translation
    * enquiry's engine passes the shorter one, because five of its names have to
@@ -181,40 +184,46 @@ class DocumentStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error?: unknown, info?: Partial<Express.Multer.File>) => void
   ): void {
-    const directory = (this.options.directory ?? directoryFor)(req);
-    const filename = (this.options.name ?? storedName)(file.originalname);
-    const storedPath = `${directory}/${filename}`;
+    // Wrapped so a synchronous throw from `directory` fails the upload the same
+    // way a rejected lookup does. The file's stream simply waits, unread, while an
+    // order's owner is looked up — busboy pauses on backpressure rather than
+    // dropping bytes.
+    Promise.resolve()
+      .then(() => (this.options.directory ?? directoryFor)(req))
+      .then((directory) => {
+        const filename = (this.options.name ?? storedName)(file.originalname);
+        const storedPath = `${directory}/${filename}`;
 
-    // Set now rather than in the callback, so a request that fails while this
-    // file is still being written leaves multer something to clean up. This
-    // mirrors what `diskStorage` does with `file.path`.
-    file.key = storedPath;
-    file.path = path.join(env.uploads.dir, storedPath);
+        // Set before the write begins, so a request that fails while this file is
+        // still being written leaves multer something to clean up. This mirrors
+        // what `diskStorage` does with `file.path`.
+        file.key = storedPath;
+        file.path = path.join(env.uploads.dir, storedPath);
 
-    // Already gone — the request was aborted before this file's turn. Matches
-    // `diskStorage`, which returns without calling back so multer's pending
-    // count is settled by the abort rather than by a write that never happened.
-    if (file.stream.destroyed) return;
+        // Already gone — the request was aborted before this file's turn. Matches
+        // `diskStorage`, which returns without calling back so multer's pending
+        // count is settled by the abort rather than by a write that never happened.
+        if (file.stream.destroyed) return undefined;
 
-    saveDocument({
-      storedPath,
-      stream: file.stream,
-      // The mimetype the browser sent, which `fileFilter` has already checked
-      // against the extension. Derived from the name only if it is missing.
-      contentType: file.mimetype || contentTypeFor(file.originalname),
-    })
-      .then((saved) => {
-        callback(null, {
-          key: storedPath,
-          storedIn: saved.copies,
-          destination: path.dirname(file.path),
-          filename,
-          // The local copy's path when the disk took it. When only the bucket
-          // did, the path it *would* have had — nothing reads it to find the
-          // bytes (`storedPathOf` and `discardDocument` both work from `key`),
-          // and a null here would be a lie of a different kind.
-          path: saved.absolutePath ?? file.path,
-          size: saved.bytes,
+        return saveDocument({
+          storedPath,
+          stream: file.stream,
+          // The mimetype the browser sent, which `fileFilter` has already checked
+          // against the extension. Derived from the name only if it is missing.
+          contentType: file.mimetype || contentTypeFor(file.originalname),
+        }).then((saved) => {
+          callback(null, {
+            key: storedPath,
+            storedIn: saved.copies,
+            destination: path.dirname(file.path),
+            filename,
+            // The local copy's path when the disk took it. When only the bucket
+            // did, the path it *would* have had — nothing reads it to find the
+            // bytes (`storedPathOf` and `discardDocument` both work from `key`),
+            // and a null here would be a lie of a different kind.
+            path: saved.absolutePath ?? file.path,
+            size: saved.bytes,
+          });
         });
       })
       .catch((error: unknown) => callback(error));
@@ -238,7 +247,16 @@ class DocumentStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error: Error | null) => void
   ): void {
-    void discardDocument(file.key ?? file.path).then(() => callback(null));
+    const stored = file.key ?? file.path;
+
+    // Nothing to remove when the request failed while this file's folder was
+    // still being looked up — no path had been chosen, so nothing was written.
+    if (!stored) {
+      callback(null);
+      return;
+    }
+
+    void discardDocument(stored).then(() => callback(null));
   }
 }
 
@@ -351,18 +369,64 @@ export const adminDocLegalisationAttachmentUpload = multer({
   limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
 }).single('file');
 
-/** Keyed on the order id in the URL — `:id` on every route this is mounted under. */
-export const adminChecklistFileUpload = multer({
-  storage: new DocumentStorage({
-    directory: (req) => `orders/${String(req.params.id)}/checklist`,
-  }),
-  fileFilter,
-  limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
-}).single('file');
+/**
+ * Runs a folder lookup once per request, however many files the request carries.
+ *
+ * The lookup is a database read, and every file in a multipart request asks for
+ * its folder separately. The promise is cached on the request, so the first file
+ * starts the read and the rest wait for the same answer — and a rejection is the
+ * same rejection for all of them.
+ */
+const oncePerRequest = (
+  folderFor: (req: Request) => Promise<string>
+): ((req: Request) => Promise<string>) => {
+  const folders = new WeakMap<Request, Promise<string>>();
 
-export const adminVoucherPassportFileUpload = multer({
+  return (req) => {
+    let folder = folders.get(req);
+
+    if (!folder) {
+      folder = folderFor(req);
+      folders.set(req, folder);
+    }
+
+    return folder;
+  };
+};
+
+/**
+ * Uploads that belong to an order — the portal's, the order form's, and the
+ * order's own endpoint.
+ *
+ * `folderFor` answers with the order's folder (`{clientId}/{orderId}`, see
+ * `shared/storage/documentFolders`) and is also where ownership is checked, so a
+ * client who does not own the order is refused **before** any byte is stored, not
+ * after. Its own multer instance per route because the way each route finds its
+ * order differs: a path parameter, or a form field that has to arrive before the
+ * files.
+ */
+export const orderDocumentsUpload = (folderFor: (req: Request) => Promise<string>) =>
+  multer({
+    storage: new DocumentStorage({ directory: oncePerRequest(folderFor) }),
+    fileFilter,
+    limits: { fileSize: env.uploads.maxBytes, files: 10, fields: 30 },
+  }).array('documents', 10);
+
+/** One file staff attach to an order, on the field the admin screens post. */
+export const orderFileUpload = (folderFor: (req: Request) => Promise<string>) =>
+  multer({
+    storage: new DocumentStorage({ directory: oncePerRequest(folderFor) }),
+    fileFilter,
+    limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },
+  }).single('file');
+
+/**
+ * The passport photo on a client's account — a file with an owner but no order, so
+ * it is filed in `{clientId}/profile`.
+ */
+export const profilePhotoUpload = multer({
   storage: new DocumentStorage({
-    directory: (req) => `orders/${String(req.params.id)}/voucher`,
+    directory: (req) => clientFolder(String(req.auth?.sub), 'profile'),
   }),
   fileFilter,
   limits: { fileSize: env.uploads.maxBytes, files: 1, fields: 10 },

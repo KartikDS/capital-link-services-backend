@@ -20,10 +20,8 @@ import {
   UserClient,
   VisaCourierOptions,
 } from '../../models';
-import {
-  adminChecklistFileUpload,
-  adminVoucherPassportFileUpload,
-} from '../../middleware/upload';
+import { orderFileUpload } from '../../middleware/upload';
+import { orderFolder } from '../../shared/storage/documentFolders';
 import { ok } from '../../shared/http/responses';
 import { badRequest, notFound } from '../../shared/errors';
 import { toIso } from '../../shared/dates';
@@ -632,6 +630,26 @@ orderDetailRoutes.get(
     });
   }
 );
+
+/**
+ * The folder a staff upload for the order in the URL goes into.
+ *
+ * The same `{clientId}/{orderId}` folder the client's own uploads use, so an order's
+ * files are all in one place whoever sent them. `:id` is the order id on every route
+ * these are mounted under; an unknown one is refused before anything is stored.
+ */
+const orderUploadFolder = async (req: Request): Promise<string> => {
+  const order = await ClsOrder.findByPk(Number(req.params.id), {
+    attributes: ['id', 'client_id'],
+  });
+
+  if (!order) throw notFound('We could not find that order.');
+
+  return orderFolder({ id: order.id, client_id: order.client_id });
+};
+
+const adminChecklistFileUpload = orderFileUpload(orderUploadFolder);
+const adminVoucherPassportFileUpload = orderFileUpload(orderUploadFolder);
 
 /**
  * PATCH /api/admin/orders/:id/checklist/:checklistId/file

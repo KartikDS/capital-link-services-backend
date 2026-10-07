@@ -51,6 +51,14 @@ jest.mock('../../src/modules/auth/auth.repository', () => ({
   nextDisplayId,
 }));
 
+// The move itself is tested in `orderDocumentFolders`; here only *when* the claim
+// asks for it matters. Mocked so no bucket or table is reached from this suite.
+const filePendingDocuments = jest.fn();
+
+jest.mock('../../src/modules/orders/orders.documentFolders', () => ({
+  filePendingDocuments,
+}));
+
 import { claim } from '../../src/modules/orders/orders.claim';
 
 /** An unowned guest order, as lodged by the checkout. */
@@ -75,6 +83,8 @@ const traveller = (overrides: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  filePendingDocuments.mockReset();
+  filePendingDocuments.mockResolvedValue(0);
   findTravellers.mockResolvedValue([]);
   findClsOrderIdByReference.mockResolvedValue(1482);
   nextDisplayId.mockResolvedValue('CLS000042');
@@ -211,6 +221,46 @@ describe('claim', () => {
     // redelivery from emailing a client two different ones.
     expect(second.password).toBeUndefined();
     expect(createClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('files the waiting documents under the new client once the account exists', async () => {
+    findByPk.mockResolvedValue(guestOrder());
+    findAnyClientByEmail.mockResolvedValue(null);
+
+    await claim('CLS-001482');
+
+    expect(filePendingDocuments).toHaveBeenCalledWith(1482, 77);
+  });
+
+  it('retries the filing when the order was already claimed', async () => {
+    findByPk.mockResolvedValue(guestOrder({ client_id: 12 }));
+    findClientById.mockResolvedValue({ id: 12, email: 'priya@example.com', fname: 'Priya' });
+
+    await claim('CLS-001482');
+
+    // A move that failed on an earlier call is picked up by the next one.
+    expect(filePendingDocuments).toHaveBeenCalledWith(1482, 12);
+  });
+
+  it('still returns the claim when filing the documents fails', async () => {
+    findByPk.mockResolvedValue(guestOrder());
+    findAnyClientByEmail.mockResolvedValue(null);
+    filePendingDocuments.mockRejectedValue(new Error('bucket unreachable'));
+
+    const result = await claim('CLS-001482');
+
+    // The order is claimed and paid either way; the password must still reach the
+    // caller so it can be emailed.
+    expect(result.created).toBe(true);
+    expect(result.password).toEqual(expect.any(String));
+  });
+
+  it('does not touch documents when no client could be found', async () => {
+    findByPk.mockResolvedValue(guestOrder({ contact_email: null }));
+
+    await claim('CLS-001482');
+
+    expect(filePendingDocuments).not.toHaveBeenCalled();
   });
 
   it('does nothing for a reference that names no order', async () => {
