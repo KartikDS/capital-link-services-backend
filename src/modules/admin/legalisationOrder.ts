@@ -33,6 +33,7 @@ import { idParam, validate, validParams, validQuery } from '../../shared/validat
 import { CLS_CONTACT } from '../../domain/company';
 import { ENABLED, ORDER_TYPE } from '../../domain/codes';
 import { orderReference } from '../../domain/orderReference';
+import { requestOf, type LegalisationRequest } from './legalisationRequest';
 
 /**
  * The Document Legalisation order screen — every read and write behind it.
@@ -240,9 +241,18 @@ export interface LegalisationScreen {
     city: string | null;
     state: string | null;
     postcode: string | null;
+    /** `tbl_countries.country_name` of the return address's country. */
+    country: string | null;
+    /** `additional_comment`: the order instructions the client wrote on the new form. */
+    comment: string | null;
     returningDate: string | null;
     hasAddress: boolean;
   } | null;
+  /**
+   * Everything the new attestation order form collected, read back from where it was
+   * stored. See `legalisationRequest.ts` for what is a column and what is the note.
+   */
+  request: LegalisationRequest;
   payment: {
     status: 0 | 1 | 2 | null;
     billing: {
@@ -830,6 +840,10 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
       ? await Countries.findByPk(payment.mba_country_id)
       : null;
 
+    const returnCountry = returnDocument?.country_id
+      ? await Countries.findByPk(returnDocument.country_id)
+      : null;
+
     const clientName =
       fullName(traveller?.first_name, traveller?.last_name) ||
       fullName(order.contact_first_name, order.contact_last_name) ||
@@ -929,10 +943,18 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
             city: clean(returnDocument.city),
             state: clean(returnDocument.state),
             postcode: clean(returnDocument.postcode),
+            country: clean(returnCountry?.country_name),
+            comment: clean(returnDocument.additional_comment),
             returningDate: toIso(returnDocument.returning_date),
             hasAddress: hasReturnAddress(returnDocument),
           }
         : null,
+      request: requestOf({
+        notes: orderNotes,
+        checklist,
+        returnDocument,
+        department: order.department,
+      }),
       payment: {
         status: payment ? asTriState(payment.s_paid) : null,
         billing: clean(payment?.mba_address)

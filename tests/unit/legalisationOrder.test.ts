@@ -131,6 +131,7 @@ const makeOrder = (overrides: Record<string, unknown> = {}) =>
     contact_first_name: 'Jo',
     contact_last_name: 'Bloggs',
     contact_phone: '0400',
+    department: null as string | null,
     date_submitted: '2026-09-01 10:00:00',
     visa_cls_team_member: null as number | null,
     visa_is_delivered_to_embassy: 0,
@@ -790,6 +791,47 @@ describe('GET /legalisation', () => {
     expect(screen.checklist).toEqual([
       { id: 1, type: 'Passport', number: 1, note: null, hasFile: true },
     ]);
+  });
+
+  it('carries what the new order form collected, and the return address’s country and instructions', async () => {
+    order.department = 'Acme Pty Ltd';
+    mockModels.Countries.findAll.mockResolvedValue([{ id: 5, country_name: 'Spain' }]);
+    mockModels.OrderReturnDocumentDetails.findOne.mockResolvedValue({
+      address: '1 Street',
+      city: 'Sydney',
+      postcode: '2000',
+      country_id: 5,
+      additional_comment: 'Leave at reception',
+    });
+    mockModels.OrderNotes.findAll.mockResolvedValue([
+      {
+        id: 4,
+        note: 'Document type: Commercial documents\nServices: Degree; Other: Translation\nDelivery: self',
+        note_by_name: 'Website order form',
+        document_type: null,
+        is_admin: 0,
+      },
+    ]);
+    mockModels.OrderDlChecklist.findAll.mockResolvedValue([
+      { id: 1, type: 'Degree', number: 2, note: 'Files to follow: a.pdf', doc_file: null },
+    ]);
+
+    const response = await request(app).get(base);
+    const screen = response.body.legalisation;
+
+    expect(screen.delivery).toMatchObject({ country: 'Spain', comment: 'Leave at reception' });
+    expect(screen.request.fromWebsite).toBe(true);
+    expect(screen.request.requirements).toMatchObject({
+      documentType: 'Commercial documents',
+      services: ['Degree', 'Other: Translation'],
+    });
+    expect(screen.request.contact.company).toBe('Acme Pty Ltd');
+    expect(screen.request.delivery.handlingLabel).toBe('I’ll handle it');
+    expect(screen.request.documents).toEqual([
+      { id: 1, name: 'Degree', quantity: 2, note: null, files: ['a.pdf'] },
+    ]);
+    // The tracker must not mistake the website note for a document type.
+    expect(screen.tracking).toEqual([]);
   });
 });
 
