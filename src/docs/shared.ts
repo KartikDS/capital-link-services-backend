@@ -111,6 +111,37 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     schema: { type: 'integer' },
     description: 'One `tbl_order_dl_checklist` row’s own id.',
   },
+  documentId: {
+    name: 'documentId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description:
+      'One `tbl_cls_order_documents` row’s own id — checked against the order in the path.',
+  },
+  destinationId: {
+    name: 'destinationId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description:
+      'One `tbl_cls_order_destinations` row’s own id — checked against the order in the path.',
+  },
+  visaSheet: {
+    name: 'visaSheet',
+    in: 'path',
+    required: true,
+    schema: { type: 'string', enum: ['return-address', 'embassy-to-from', 'traveller-label'] },
+    description: 'Which printable public-visa sheet.',
+  },
+  labelType: {
+    name: 'labelType',
+    in: 'path',
+    required: true,
+    schema: { type: 'string', enum: ['pickup', 'return', 'inbound', 'outbound'] },
+    description:
+      'A DHL label: `pickup`/`return` print a stored one, `inbound`/`outbound` ask for a new one.',
+  },
   queue: {
     name: 'queue',
     in: 'path',

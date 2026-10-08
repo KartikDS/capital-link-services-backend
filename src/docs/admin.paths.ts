@@ -1389,6 +1389,17 @@ export const adminPaths = {
   },
 
   '/api/admin/orders/{id}/voucher/passport-file': {
+    get: operation('/api/admin/orders/{id}/voucher/passport-file', {
+      tag,
+      summary: 'Stream a Russian visa voucher order’s passport scan',
+      description:
+        'The legacy screen’s “Passport File” link. **Voucher orders only** (any other order is a 404). Tries the stored path, then the legacy `dev/rvv/{clientId}/{orderId}/{file}` location. Admin only.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The file' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
     patch: operation('/api/admin/orders/{id}/voucher/passport-file', {
       tag,
       summary: 'Replace a Russian visa voucher order’s passport scan',
@@ -1407,7 +1418,7 @@ export const adminPaths = {
       tag,
       summary: 'Everything the Document Legalisation order screen renders',
       description:
-        'Read-and-write counterpart of `GET /api/admin/orders/{id}/detail` for **document-legalisation orders only** (`order_type` 9) — any other order is a 404. Reproduces the legacy `viewDocLegalisationAction` screen: milestones, Ticket, both comment lanes, document-type tracker, Document Details, Contact, Checklist, Delivery, Billing and the Location option list.\n\n`comments` carries **both** lanes (`lane: "client"` is `is_admin` 0, emailed to the client; `lane: "admin"` is `is_admin` 1, CLS-internal). That is correct for this staff-only route and must never be copied to a client-facing one. `stamps` are ISO instants; `ticket.followUpDate`, `embassy.deliveredDate` are plain `YYYY-MM-DD`.\n\n`order.reference` is the client-facing portal reference (`CLS-000012`) that `/dashboard/orders/[reference]` is keyed by; `order.orderNo` is CLS’s own number.\n\n`order.isDhlCourier` is `tbl_visa_courier_options.s_dhl` for the order’s courier; the legacy DHL Label button additionally needs `delivery` state other than `ACT`.',
+        'Read-and-write counterpart of `GET /api/admin/orders/{id}/detail` for **document-legalisation orders only** (`order_type` 9) — any other order is a 404. Reproduces the legacy `viewDocLegalisationAction` screen: milestones, Ticket, both comment lanes, document-type tracker, Document Details, Contact, Checklist, Delivery, Billing and the Location option list.\n\n`comments` carries **both** lanes (`lane: "client"` is `is_admin` 0, emailed to the client; `lane: "admin"` is `is_admin` 1, CLS-internal). That is correct for this staff-only route and must never be copied to a client-facing one. `stamps` are ISO instants; `ticket.followUpDate`, `embassy.deliveredDate` are plain `YYYY-MM-DD`.\n\n`order.reference` is the client-facing portal reference (`CLS-000012`) that `/dashboard/orders/[reference]` is keyed by; `order.orderNo` is CLS’s own number.\n\n`order.isDhlCourier` is `tbl_visa_courier_options.s_dhl` for the order’s courier; the legacy DHL Label button additionally needs `delivery` state other than `ACT`.\n\n`request` is what the **new attestation order form** collected: requirements (document type, services ticked, pathway, needed-by date, originals being sent, reference, commercial invoice no.), the contact’s company and full address, the document rows with their file names, and delivery & return (CLS handles it / I’ll handle it, return address, "not available at this time", instructions). Most of it has no column, so it is read back from the website’s summary note in `tbl_order_notes`; `request.raw` is that note verbatim and `request.fromWebsite` is false for an order CLS keyed in by hand. `delivery.country` and `delivery.comment` are the return address’s country and the order instructions.',
       auth: 'bearer',
       responses: {
         200: okObject('The screen', { legalisation: { type: 'object' } }),
@@ -1749,6 +1760,76 @@ export const adminPaths = {
       summary: 'Data for a printable sheet',
       description:
         'The legacy PHP print scripts are not in this repository, so these are designed sheets rather than ports: `return-address` (the client’s return address as a label), `embassy-to-from` (CLS to the destination embassy, from the `tbl_countries` record) and `order-label`.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The sheet', { print: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/clearance': {
+    get: operation('/api/admin/orders/{id}/clearance', {
+      tag,
+      summary: 'Everything the Police Clearance order screen renders',
+      description:
+        'Read-and-write counterpart of `GET /api/admin/orders/{id}/detail` for **police-clearance orders only** (`order_type` 5) — any other order is a 404. Reproduces the legacy `viewPoliceClearanceAction` screen: the four milestones, CLS Team Member, the Ticket Comments history, Applicant Details, Document Details and Payment Details; plus what the new order journey stores (`requirements`, `pricing`, the applicants’ date of birth and passport dates, the return address’s email, country and comment, the uploaded `documents`, the payment record).\n\n`history` is every `tbl_order_notes` row for the order, oldest first — the website’s own "Purpose: …" line among them. `requirements.purposeId` is that line’s slug. `stamps` are ISO instants; applicant dates are plain `YYYY-MM-DD`. `paymentState` is the shared Payment Details state from `GET /orders/{id}/payment` (Order Status, Payment Status, Account Number, Pay Now, invoices). Card details are never returned.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('The screen', { clearance: { type: 'object' } }),
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/clearance/ticket': {
+    patch: operation('/api/admin/orders/{id}/clearance/ticket', {
+      tag,
+      summary: 'Order Progress Submit — milestones, team member, ticket comment',
+      description:
+        'Reproduces the legacy update. Only fields present are written; `\'\'` clears a stamp. The first changed stamp (received, submitted, completed, closed — in that order) sets `notification.scantype`; a cleared stamp is not a milestone. A non-empty `ticketComments` appends a `tbl_order_notes` row (`user_type` Admin, `is_admin` 0 — the client-facing lane). A set "closed" stamp moves `tbl_cls_order.status` to 2, as the legacy did. The backend sends no email; the caller builds it from `notification`.',
+      auth: 'bearer',
+      body: {
+        schema: body({
+          allItemsReceivedAtCLS: f.string('ISO-8601 instant, or empty to clear.'),
+          submittedForProcessing: f.string('ISO-8601 instant, or empty to clear.'),
+          completedReceivedAtCLS: f.string('ISO-8601 instant, or empty to clear.'),
+          orderOnRouteAndClosed: f.string('ISO-8601 instant, or empty to clear.'),
+          clsTeamMember: f.string('`tbl_user_admin.id`, or empty for none.'),
+          ticketComments: f.string('A new comment; emailed to the client.'),
+        }),
+      },
+      responses: {
+        200: okObject('Saved', {
+          notification: { type: 'object' },
+          history: { type: 'array', items: { type: 'object' } },
+        }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/clearance/documents/{documentId}/file': {
+    get: operation('/api/admin/orders/{id}/clearance/documents/{documentId}/file', {
+      tag,
+      summary: 'A document the client uploaded to the order',
+      description:
+        'Streams one `tbl_cls_order_documents` file (the passport copies, mostly), as an attachment. Staff only. The row must belong to this order.',
+      auth: 'bearer',
+      responses: {
+        200: { description: 'The file.' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/clearance/print/return-address': {
+    get: operation('/api/admin/orders/{id}/clearance/print/return-address', {
+      tag,
+      summary: 'Data for the Print Return Address Label sheet',
+      description:
+        'The legacy `print-return-address-label.php` is not in this repository, so this is a designed sheet: the order’s return address as a shipping label.',
       auth: 'bearer',
       responses: {
         200: okObject('The sheet', { print: { type: 'object' } }),

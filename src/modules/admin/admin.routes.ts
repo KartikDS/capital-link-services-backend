@@ -35,6 +35,10 @@ import { orderIdFromReference } from '../../domain/orderReference';
 import * as orderService from '../orders/orders.service';
 import { orderDetailRoutes } from './orderDetail';
 import { legalisationOrderRoutes } from './legalisationOrder';
+import { orderPaymentRoutes } from './orderPayment';
+import { russianVoucherOrderRoutes } from './russianVoucherOrder';
+import { clearanceOrderRoutes } from './clearanceOrder';
+import { publicVisaOrderRoutes } from './publicVisaOrder';
 import { contentPageAdminRoutes, sectionAdminRoutes } from './content';
 import {
   courierOptionAdminRoutes,
@@ -1205,6 +1209,22 @@ adminRoutes.use('/orders', orderDetailRoutes);
  * file is what imports the router.
  */
 adminRoutes.use('/orders', legalisationOrderRoutes(audit));
+
+/**
+ * The payment actions shared by the order screens — `/orders/:id/payment…`: Order
+ * Status, Payment Status, Account Number, Pay Now, Send Invoice, Reprint Invoice.
+ * Service-neutral; see `orderPayment.ts` for the API the other screens reuse.
+ */
+adminRoutes.use('/orders', orderPaymentRoutes(audit));
+
+/** The Russian visa voucher order screen: `/orders/:id/voucher…`. */
+adminRoutes.use('/orders', russianVoucherOrderRoutes(audit));
+
+/** The Police Clearance order screen: `/orders/:id/clearance…`. Same `audit` hand-off. */
+adminRoutes.use('/orders', clearanceOrderRoutes(audit));
+
+/** The Public Visa order screen: `/orders/:id/public-visa…`. Same `audit` hand-off. */
+adminRoutes.use('/orders', publicVisaOrderRoutes(audit));
 
 /**
  * Full CRUD for clients, staff, embassy and TPN accounts — the legacy sidebar's
