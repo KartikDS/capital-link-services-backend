@@ -95,6 +95,8 @@ export interface ClearanceApplicant {
   email: string | null;
   phone: string | null;
   passportNumber: string | null;
+  /** The applicant's nationality, by country name. */
+  nationality: string | null;
   /** `YYYY-MM-DD`. */
   dateOfBirth: string | null;
   passportIssueDate: string | null;
@@ -417,6 +419,17 @@ export const clearanceOrderRoutes = (audit: LegalisationAudit): Router => {
       ? await Countries.findByPk(returnDocument.country_id)
       : null;
 
+    const nationalityIds = [
+      ...new Set(
+        travellers.map((row) => row.nationality).filter((id): id is number => id !== null)
+      ),
+    ];
+    const nationalityCountries =
+      nationalityIds.length > 0 ? await Countries.findAll({ where: { id: nationalityIds } }) : [];
+    const nationalityName = new Map(
+      nationalityCountries.map((row) => [row.id, clean(row.country_name)])
+    );
+
     const primary = travellers.find((row) => row.is_primary === 1) ?? travellers[0] ?? null;
     const clientName =
       fullName(contact.client?.fname, contact.client?.lname) ||
@@ -462,6 +475,7 @@ export const clearanceOrderRoutes = (audit: LegalisationAudit): Router => {
         email: clean(row.email),
         phone: clean(row.phone),
         passportNumber: clean(row.passport_number),
+        nationality: row.nationality ? (nationalityName.get(row.nationality) ?? null) : null,
         dateOfBirth: toDateOnly(row.date_of_birth),
         passportIssueDate: toDateOnly(row.passport_issue_date),
         passportExpiryDate: toDateOnly(row.passport_expiry_date),

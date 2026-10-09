@@ -308,11 +308,13 @@ describe('GET /clearance', () => {
         email: 'm@example.com',
         phone: '0411',
         passport_number: 'P123',
+        nationality: 14,
         date_of_birth: '1990-02-03',
         passport_issue_date: '2020-01-01',
         passport_expiry_date: '2030-01-01',
       },
     ]);
+    mockModels.Countries.findAll.mockResolvedValue([{ id: 14, country_name: 'South Africa' }]);
     mockModels.OrderReturnDocumentDetails.findOne.mockResolvedValue({
       company: 'Acme',
       address: '1 Main St',
@@ -349,6 +351,7 @@ describe('GET /clearance', () => {
     expect(screen.requirements.purposeId).toBe('visa-application');
     expect(screen.requirements.requestingCountry).toBe('South Africa');
     expect(screen.applicants[0].passportExpiryDate).toBe('2030-01-01');
+    expect(screen.applicants[0].nationality).toBe('South Africa');
     expect(screen.returnDocument.hasAddress).toBe(true);
     expect(screen.pricing.totalFeeCents).toBe(13200);
     expect(screen.payment.status).toBe(1);
