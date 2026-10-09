@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   ClsOrder,
   ClsOrderDestinations,
+  ClsOrderDocuments,
   Countries,
   DocumentLegalizationOrderDetails,
   OrderCourierServiceDetails,
@@ -24,12 +25,12 @@ import { orderFileUpload } from '../../middleware/upload';
 import { orderFolder } from '../../shared/storage/documentFolders';
 import { ok } from '../../shared/http/responses';
 import { badRequest, notFound } from '../../shared/errors';
-import { toIso } from '../../shared/dates';
+import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { toCents } from '../../shared/money';
 import { discardDocument, storedPathOf } from '../../shared/storage/documents';
 import { clean } from '../../shared/text';
 import { idParam, validate, validParams } from '../../shared/validation';
-import { ORDER_TYPE } from '../../domain/codes';
+import { DOCUMENT_STATUS, ORDER_TYPE } from '../../domain/codes';
 
 /**
  * One order, with everything the legacy admin's order screen shows.
@@ -650,6 +651,7 @@ const orderUploadFolder = async (req: Request): Promise<string> => {
 
 const adminChecklistFileUpload = orderFileUpload(orderUploadFolder);
 const adminVoucherPassportFileUpload = orderFileUpload(orderUploadFolder);
+const adminOrderDocumentUpload = orderFileUpload(orderUploadFolder);
 
 /**
  * PATCH /api/admin/orders/:id/checklist/:checklistId/file
@@ -707,5 +709,75 @@ orderDetailRoutes.patch(
     if (previous) void discardDocument(previous);
 
     ok(res, { hasPassportFile: true });
+  }
+);
+
+/**
+ * POST /api/admin/orders/:id/documents
+ *
+ * Staff attach a document to any order — a signed form, a returned certificate, a
+ * scan the client sent by email. `file` is the upload; `documentRowId` is
+ * optional:
+ *
+ *  - **with it**, the file goes onto that existing row of `tbl_cls_order_documents`
+ *    (a document the client has not supplied yet, or one being replaced), and the
+ *    old file is discarded once the new one is in place;
+ *  - **without it**, a new row is added to the order for the file.
+ *
+ * The row is marked uploaded either way, so the order's document list and the
+ * client's portal both show it. `tbl_cls_order_documents` has no foreign key, so
+ * `:id` is checked against the row's own `order_id` rather than trusted from the
+ * URL.
+ */
+orderDetailRoutes.post(
+  '/:id/documents',
+  validate(z.object({ id: idParam }), 'params'),
+  adminOrderDocumentUpload,
+  async (req: Request, res: Response) => {
+    const { id } = validParams<{ id: number }>(req);
+    if (!req.file) throw badRequest('Attach a file.');
+
+    const stored = storedPathOf(req.file);
+    const now = toLegacyDateTime();
+    const rowId = Number(req.body?.documentRowId);
+
+    if (Number.isSafeInteger(rowId) && rowId > 0) {
+      const row = await ClsOrderDocuments.findByPk(rowId);
+      if (!row || row.order_id !== id) {
+        // The file is already stored by now; leave nothing behind for a refusal.
+        void discardDocument(stored);
+        throw notFound('We could not find that document on this order.');
+      }
+
+      const previous = clean(row.document);
+      await row.update({
+        document: stored,
+        status: DOCUMENT_STATUS.UPLOADED,
+        modified: now,
+      });
+      if (previous) void discardDocument(previous);
+
+      ok(res, { document: { id: row.id } });
+      return;
+    }
+
+    const created = await ClsOrderDocuments.create({
+      order_id: id,
+      country_id: null,
+      visa_type_id: null,
+      entry_option: null,
+      process_location_id: null,
+      nationality: null,
+      region: null,
+      category_id: null,
+      document_id: null,
+      traveller_id: null,
+      document: stored,
+      status: DOCUMENT_STATUS.UPLOADED,
+      created: now,
+      modified: now,
+    });
+
+    ok(res, { document: { id: created.id } });
   }
 );

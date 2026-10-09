@@ -1413,6 +1413,23 @@ export const adminPaths = {
     }),
   },
 
+  '/api/admin/orders/{id}/documents': {
+    post: operation('/api/admin/orders/{id}/documents', {
+      tag,
+      summary: 'Attach a document to an order',
+      description:
+        '`multipart/form-data` with a single `file` field and an optional `documentRowId`. With `documentRowId` the file is put on that existing row of the order’s documents (a document not yet supplied, or one being replaced; a row that belongs to another order is a 404). Without it a new document row is added. Either way the row is marked uploaded, so it shows in the admin’s document list and the client’s portal. Works for any order service. Admin only.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Attached', {
+          document: { type: 'object', properties: { id: { type: 'integer' } } },
+        }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
   '/api/admin/orders/{id}/legalisation': {
     get: operation('/api/admin/orders/{id}/legalisation', {
       tag,
