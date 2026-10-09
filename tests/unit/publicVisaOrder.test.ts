@@ -774,6 +774,8 @@ describe('parseTravelPurpose', () => {
           'Entry: multiple',
           'Account: 1234',
           'PO: PO-9',
+          'Company: Reyes & Co',
+          'Billing contact: accounts@reyes.test',
           'Two staff travelling.',
           'Please call first.',
         ].join('\n')
@@ -784,6 +786,8 @@ describe('parseTravelPurpose', () => {
       entryType: 'multiple',
       account: '1234',
       purchaseOrder: 'PO-9',
+      company: 'Reyes & Co',
+      billingContact: 'accounts@reyes.test',
       description: 'Two staff travelling.\nPlease call first.',
     });
   });

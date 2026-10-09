@@ -376,6 +376,8 @@ export interface PublicVisaScreen {
       entryType: string | null;
       account: string | null;
       purchaseOrder: string | null;
+      company: string | null;
+      billingContact: string | null;
       description: string | null;
     };
     pricing: {
@@ -649,11 +651,13 @@ export const parseTravelPurpose = (text: string | null) => {
     entryType: null as string | null,
     account: null as string | null,
     purchaseOrder: null as string | null,
+    company: null as string | null,
+    billingContact: null as string | null,
   };
   const rest: string[] = [];
 
   for (const line of (text ?? '').split(/\r?\n/)) {
-    const match = /^(Visa category|Length of stay|Entry|Account|PO):\s*(.*)$/.exec(
+    const match = /^(Visa category|Length of stay|Entry|Account|PO|Company|Billing contact):\s*(.*)$/.exec(
       line.trim()
     );
     if (!match) {
@@ -673,6 +677,12 @@ export const parseTravelPurpose = (text: string | null) => {
         break;
       case 'Account':
         found.account = value;
+        break;
+      case 'Company':
+        found.company = value;
+        break;
+      case 'Billing contact':
+        found.billingContact = value;
         break;
       default:
         found.purchaseOrder = value;
