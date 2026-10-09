@@ -433,6 +433,8 @@ export type PublicVisaPrintView =
       orderId: number;
       orderNo: string;
       from: { company: string; phone: string };
+      /** The client's return address — the other end of each label. */
+      client: PrintAddress;
       /** One sheet per destination, as the order can cover several embassies. */
       embassies: {
         destinationId: number;
@@ -452,11 +454,18 @@ export type PublicVisaPrintView =
       orderId: number;
       orderNo: string;
       destination: string | null;
+      /** The destination's country code, which the courier label's barcode carries. */
+      destinationCode: string | null;
+      /** CLS's number for courier pickup, printed on the label. */
+      pickupPhone: string;
       visaType: string | null;
       traveller: {
         name: string | null;
         passportNumber: string | null;
         dateOfBirth: string | null;
+        /** The traveller's own departure date, else the order's. */
+        departureDate: string | null;
+        nationality: string | null;
       };
     };
 
@@ -2436,6 +2445,15 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
         });
         const countryOf = new Map(countries.map((row) => [row.id, row]));
 
+        // The client's return address, which the sheet prints as the other half of
+        // each label: embassy to client on one, client to embassy on the other.
+        const returnDocument = await OrderReturnDocumentDetails.findOne({
+          where: { order_id: id },
+        });
+        const clientCountry = returnDocument?.country_id
+          ? await Countries.findByPk(returnDocument.country_id)
+          : null;
+
         print = {
           kind,
           orderId: id,
@@ -2443,6 +2461,17 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
           // CLS's street address is not held anywhere in this codebase or schema,
           // so the "From" block is the company and its published number only.
           from: { company: CLS_CONTACT.companyName, phone: CLS_CONTACT.phone },
+          client: {
+            name: fullName(returnDocument?.first_name, returnDocument?.last_name),
+            company: clean(returnDocument?.company),
+            address: clean(returnDocument?.address),
+            city: clean(returnDocument?.city),
+            state: clean(returnDocument?.state),
+            postcode: clean(returnDocument?.postcode),
+            country: clean(clientCountry?.country_name),
+            phone: clean(returnDocument?.contact_number),
+            email: clean(returnDocument?.email),
+          },
           embassies: wanted.map((row) => {
             const country = row.country_id ? countryOf.get(row.country_id) : undefined;
             return {
@@ -2468,11 +2497,12 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
         if (!destination || !traveller || traveller.order_id !== id) {
           throw notFound('We could not find that traveller on this order.');
         }
-        const [country, type] = await Promise.all([
+        const [country, type, nationality] = await Promise.all([
           destination.country_id ? Countries.findByPk(destination.country_id) : null,
           destination.visa_type_id
             ? PublicVisaTypes.findByPk(destination.visa_type_id)
             : null,
+          traveller.nationality ? Countries.findByPk(traveller.nationality) : null,
         ]);
 
         print = {
@@ -2480,11 +2510,16 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
           orderId: id,
           orderNo,
           destination: clean(country?.country_name),
+          destinationCode: clean(country?.country_code),
+          pickupPhone: CLS_CONTACT.phone,
           visaType: clean(type?.type),
           traveller: {
             name: fullName(traveller.first_name, traveller.last_name),
             passportNumber: clean(traveller.passport_number),
             dateOfBirth: toDateOnly(traveller.date_of_birth),
+            departureDate:
+              toDateOnly(traveller.departure_date) ?? toDateOnly(order.departure_date),
+            nationality: clean(nationality?.country_name),
           },
         };
       }

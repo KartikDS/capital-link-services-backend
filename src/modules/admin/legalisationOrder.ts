@@ -334,6 +334,8 @@ export type LegalisationPrintView =
       orderId: number;
       orderNo: string;
       from: { company: string; phone: string };
+      /** The client's return address — the other end of each label. */
+      client: PrintAddress;
       to: {
         name: string | null;
         country: string | null;
@@ -351,6 +353,12 @@ export type LegalisationPrintView =
       orderId: number;
       orderNo: string;
       destination: string | null;
+      /** The destination embassy's name, as the label prints it. */
+      embassy: string | null;
+      /** The client account's company. */
+      company: string | null;
+      /** CLS's number for courier pickup, printed on the label. */
+      pickupPhone: string;
       clientName: string | null;
       checklistRows: number;
       documentCount: number;
@@ -1862,6 +1870,15 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
           ? await Countries.findByPk(destination.country_id)
           : null;
 
+        // The client's return address, which the sheet prints as the other half of
+        // each label: embassy to client on one, client to embassy on the other.
+        const returnDocument = await OrderReturnDocumentDetails.findOne({
+          where: { order_id: id },
+        });
+        const clientCountry = returnDocument?.country_id
+          ? await Countries.findByPk(returnDocument.country_id)
+          : null;
+
         print = {
           kind,
           orderId: id,
@@ -1869,6 +1886,17 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
           // CLS's street address is not held anywhere in this codebase or schema,
           // so the "From" block is the company and its published number only.
           from: { company: CLS_CONTACT.companyName, phone: CLS_CONTACT.phone },
+          client: {
+            name: fullName(returnDocument?.first_name, returnDocument?.last_name) || null,
+            company: clean(returnDocument?.company),
+            address: clean(returnDocument?.address),
+            city: clean(returnDocument?.city),
+            state: clean(returnDocument?.state),
+            postcode: clean(returnDocument?.postcode),
+            country: clean(clientCountry?.country_name),
+            phone: clean(returnDocument?.contact_number),
+            email: clean(returnDocument?.email),
+          },
           to: {
             name: clean(country?.rep_name),
             country: clean(country?.country_name),
@@ -1882,10 +1910,11 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
           },
         };
       } else {
-        const [country, traveller, checklist] = await Promise.all([
+        const [country, traveller, checklist, account] = await Promise.all([
           destination.country_id ? Countries.findByPk(destination.country_id) : null,
           OrderTravellerDetails.findOne({ where: { order_id: id, is_primary: 1 } }),
           OrderDlChecklist.findAll({ where: { order_no: id } }),
+          order.client_id ? UserClient.findByPk(order.client_id) : null,
         ]);
 
         print = {
@@ -1893,6 +1922,9 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
           orderId: id,
           orderNo,
           destination: clean(country?.country_name),
+          embassy: clean(country?.rep_name),
+          company: clean(account?.company),
+          pickupPhone: CLS_CONTACT.phone,
           clientName:
             fullName(traveller?.first_name, traveller?.last_name) ||
             fullName(order.contact_first_name, order.contact_last_name) ||
