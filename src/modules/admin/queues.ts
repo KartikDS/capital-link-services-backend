@@ -3,19 +3,23 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
   ClsOrder,
+  ClsOrderDestinations,
   Countries,
   DocumentLegalizationOrderDetails,
   OrderDocDeliveryDetails,
   OrderReturnDocumentDetails,
   OrderTravellerDetails,
   PoliceClearances,
+  PublicVisaTypeLocations,
   RussianVisaVoucherTypes,
+  UserAdmin,
 } from '../../models';
+import { PUBLIC_VISA_REGION } from './publicVisaOrder';
 import { paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { cached } from '../../shared/ttlCache';
 import { toIso } from '../../shared/dates';
-import { clean } from '../../shared/text';
+import { clean, fullName } from '../../shared/text';
 import { validate, validParams, validQuery } from '../../shared/validation';
 import { CLS_ORDER_STATUS, ORDER_TYPE } from '../../domain/codes';
 
@@ -100,6 +104,102 @@ const joinTime = (hour: number | null, minute: number | null): string | null => 
   const hh = String(hour ?? 0).padStart(2, '0');
   const mm = String(minute ?? 0).padStart(2, '0');
   return `${hh}:${mm}`;
+};
+
+/** How far a legalisation order has got, by its four milestone stamps. */
+type LegalisationScanStatus = 'first' | 'second' | 'third' | 'fourth';
+
+const SCAN_ORDER: readonly LegalisationScanStatus[] = ['first', 'second', 'third', 'fourth'];
+
+/** The further of two milestones. */
+const bump = (
+  current: LegalisationScanStatus | null,
+  next: LegalisationScanStatus
+): LegalisationScanStatus =>
+  current === null || SCAN_ORDER.indexOf(next) > SCAN_ORDER.indexOf(current) ? next : current;
+
+/**
+ * What a queue row shows that lives on other tables: how far the order has got
+ * (its four milestone stamps are on the destination), who is on it, and where a
+ * public visa is being processed.
+ *
+ * Three lookups for the whole page rather than three per row — a page is up to a
+ * hundred orders, and per-row lookups made the legalisation queue the slowest
+ * screen in the panel once before.
+ */
+const loadQueueExtras = async (rows: ClsOrder[]) => {
+  const orderIds = rows.map((row) => row.id);
+  const teamIds = [
+    ...new Set(
+      rows.map((row) => row.visa_cls_team_member).filter((id): id is number => id !== null)
+    ),
+  ];
+
+  const [stampRows, teamRows] = await Promise.all([
+    orderIds.length > 0
+      ? ClsOrderDestinations.findAll({
+          where: { order_id: orderIds },
+          attributes: [
+            'id',
+            'order_id',
+            'process_location_id',
+            'visa_date_cls_received_all_items',
+            'visa_date_submitted_for_processing',
+            'visa_date_completed_and_received_at_cls',
+            'visa_date_order_on_route_and_closed',
+          ],
+          order: [['id', 'ASC']],
+        })
+      : [],
+    teamIds.length > 0
+      ? UserAdmin.findAll({ where: { id: teamIds }, attributes: ['id', 'fname', 'lname'] })
+      : [],
+  ]);
+
+  const teamName = new Map(teamRows.map((row) => [row.id, fullName(row.fname, row.lname)]));
+
+  const scanStatusOf = (orderId: number): LegalisationScanStatus | null => {
+    let reached: LegalisationScanStatus | null = null;
+    for (const stamp of stampRows.filter((one) => one.order_id === orderId)) {
+      if (clean(stamp.visa_date_cls_received_all_items)) reached = bump(reached, 'first');
+      if (clean(stamp.visa_date_submitted_for_processing)) reached = bump(reached, 'second');
+      if (clean(stamp.visa_date_completed_and_received_at_cls)) reached = bump(reached, 'third');
+      if (clean(stamp.visa_date_order_on_route_and_closed)) reached = bump(reached, 'fourth');
+    }
+    return reached;
+  };
+
+  // The Processing Location is the first destination's, as the order screen
+  // writes it — and only on a site that has the concept at all.
+  const locationIds = PUBLIC_VISA_REGION.hasProcessLocation
+    ? [
+        ...new Set(
+          stampRows
+            .map((stamp) => stamp.process_location_id)
+            .filter((id): id is number => id !== null)
+        ),
+      ]
+    : [];
+  const locationRows =
+    locationIds.length > 0
+      ? await PublicVisaTypeLocations.findAll({
+          where: { id: locationIds },
+          attributes: ['id', 'location'],
+        })
+      : [];
+  const locationName = new Map(locationRows.map((row) => [row.id, clean(row.location)]));
+
+  return {
+    scanStatusOf,
+    teamNameOf: (row: ClsOrder): string | null =>
+      row.visa_cls_team_member !== null ? (teamName.get(row.visa_cls_team_member) ?? null) : null,
+    processLocationOf: (orderId: number): string | null => {
+      const first = stampRows.find((one) => one.order_id === orderId);
+      return first?.process_location_id
+        ? (locationName.get(first.process_location_id) ?? null)
+        : null;
+    },
+  };
 };
 
 /** The name search every queue offers, over the columns that queue displays. */
@@ -241,6 +341,8 @@ queueRoutes.get(
         offset: page.offset,
       });
 
+      const { scanStatusOf, teamNameOf, processLocationOf } = await loadQueueExtras(rows);
+
       return paged(
         res,
         'rows',
@@ -256,6 +358,9 @@ queueRoutes.get(
                 .destinationCountry?.country_name
             ),
             departureDate: toIso(row.departure_date),
+            scanStatus: scanStatusOf(row.id),
+            processLocation: processLocationOf(row.id),
+            assignedTo: teamNameOf(row),
             status: row.status,
             // The old system's reference, carried over on migrated orders. The
             // legacy column header calls it "Migrated Order No".
@@ -413,6 +518,8 @@ queueRoutes.get(
       offset: page.offset,
     });
 
+    const { scanStatusOf, teamNameOf } = await loadQueueExtras(rows);
+
     return paged(
       res,
       'rows',
@@ -437,6 +544,8 @@ queueRoutes.get(
           company: clean(wide.returnDocumentDetails?.[0]?.company),
           invoiceNo: clean(detail?.com_invoice_no),
           referenceNo: clean(detail?.ref_no),
+          scanStatus: scanStatusOf(row.id),
+          assignedTo: teamNameOf(row),
           status: row.status,
           migratedOrderNo: clean(row.order_no),
         };
