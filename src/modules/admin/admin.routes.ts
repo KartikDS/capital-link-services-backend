@@ -131,7 +131,12 @@ const readDashboardMetrics = async () => {
         date_submitted: { [Op.ne]: null },
       },
     }),
-    Inquiries.count({ where: { status: 'new' } }),
+    // Received today, not "never handled": the admin cannot mark an enquiry as
+    // dealt with, so a status count only ever grows — it read 142, six weeks of
+    // enquiries, and meant nothing. Today's count starts at zero each morning.
+    Inquiries.count({
+      where: { created: { [Op.gte]: `${toLegacyDateTime().slice(0, 10)} 00:00:00` } },
+    }),
     UserClient.count({ where: { s_enabled: ENABLED } }),
     ClsOrderDocuments.count({ where: { status: DOCUMENT_STATUS.UPLOADED } }),
   ]);
