@@ -19,6 +19,7 @@ import type {
   WeightPrice,
 } from '../../models';
 import { toCents } from '../../shared/money';
+import { toRenderableHtml } from '../../shared/richText';
 import {
   clean,
   cleanOr,
@@ -192,6 +193,8 @@ export const toPoliceClearance = (row: PoliceClearances) => ({
     priceCents: toCents(row.price_additional),
   },
   information: clean(row.gen_info),
+  /** `gen_info` as sanitised HTML — what the website renders. Null when blank. */
+  informationHtml: toRenderableHtml(row.gen_info),
   form: clean(row.file_path),
 });
 

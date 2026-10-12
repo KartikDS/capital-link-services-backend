@@ -144,6 +144,11 @@ export const lookupPaths = {
                   nullable: true,
                   description: '`gen_info` — CLS’s own description.',
                 },
+                informationHtml: {
+                  type: 'string',
+                  nullable: true,
+                  description: '`gen_info` as sanitised HTML, ready to render. Null when blank.',
+                },
                 form: {
                   type: 'string',
                   nullable: true,

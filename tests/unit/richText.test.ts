@@ -1,4 +1,8 @@
-import { isBlankRichText, sanitizeRichText } from '../../src/shared/richText';
+import {
+  isBlankRichText,
+  sanitizeRichText,
+  toRenderableHtml,
+} from '../../src/shared/richText';
 
 describe('sanitizeRichText', () => {
   it('keeps what the editor produces', () => {
@@ -38,5 +42,27 @@ describe('isBlankRichText', () => {
 
   it('is not blank when there is text', () => {
     expect(isBlankRichText('<p>x</p>')).toBe(false);
+  });
+});
+
+describe('toRenderableHtml', () => {
+  it('is null for nothing, an empty editor and the legacy <br> placeholder', () => {
+    expect(toRenderableHtml(null)).toBeNull();
+    expect(toRenderableHtml('')).toBeNull();
+    expect(toRenderableHtml('<p></p>')).toBeNull();
+    expect(toRenderableHtml('<br>')).toBeNull();
+  });
+
+  it('turns legacy plain text into escaped paragraphs', () => {
+    expect(toRenderableHtml('One & two\nline\n\nTwo < 3')).toBe(
+      '<p>One &amp; two<br>line</p><p>Two &lt; 3</p>'
+    );
+  });
+
+  it('sanitises markup and drops Word-only wrappers', () => {
+    const out = toRenderableHtml(
+      '<p class="MsoNormal"><b>Hi</b><o:p></o:p><script>x()</script></p>'
+    );
+    expect(out).toBe('<p>Hi</p>');
   });
 });

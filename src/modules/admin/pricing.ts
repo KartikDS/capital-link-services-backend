@@ -10,6 +10,7 @@ import {
   WeightPrice,
 } from '../../models';
 import { notFound } from '../../shared/errors';
+import { isBlankRichText, sanitizeRichText } from '../../shared/richText';
 import { created, noContent, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { centsToNumber, toCents } from '../../shared/money';
@@ -60,6 +61,14 @@ const clearanceBody = z.object({
   status: z.union([z.literal(0), z.literal(1)]).optional(),
 });
 
+/**
+ * The description is staff-authored rich text. Rebuilt through the allow-list on
+ * the way in, and an editor left empty (`<p></p>`) is stored as null rather than
+ * as markup with nothing in it.
+ */
+const cleanGenInfo = (value: string | undefined): string | null =>
+  value === undefined || isBlankRichText(value) ? null : sanitizeRichText(value);
+
 const toClearanceRow = (row: PoliceClearances) => ({
   id: row.id,
   name: clean(row.name),
@@ -103,7 +112,7 @@ policeClearanceAdminRoutes.post('/', async (req: Request, res: Response) => {
     name_additional: body.nameAdditional ?? null,
     price: centsToNumber(body.priceCents),
     price_additional: centsToNumber(body.priceAdditionalCents ?? 0),
-    gen_info: body.genInfo ?? null,
+    gen_info: cleanGenInfo(body.genInfo),
     status: body.status ?? 1,
   });
   created(res, { clearance: toClearanceRow(row) });
@@ -127,7 +136,9 @@ policeClearanceAdminRoutes.patch(
       ...(body.priceAdditionalCents !== undefined
         ? { price_additional: centsToNumber(body.priceAdditionalCents) }
         : {}),
-      ...(body.genInfo !== undefined ? { gen_info: body.genInfo } : {}),
+      ...(body.genInfo !== undefined
+        ? { gen_info: cleanGenInfo(body.genInfo) }
+        : {}),
       ...(body.status !== undefined ? { status: body.status } : {}),
     });
 

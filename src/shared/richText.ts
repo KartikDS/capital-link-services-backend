@@ -65,3 +65,28 @@ export const sanitizeRichText = (html: string): string =>
 export const isBlankRichText = (html: string): boolean =>
   sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} }).replace(/&nbsp;|\s/g, '')
     .length === 0;
+
+const escapeHtml = (text: string): string =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * A stored description as HTML that is safe to render, or null when it says nothing.
+ *
+ * Rows CLS wrote before the editor existed are plain text with line breaks, and
+ * some carry Word markup (`<p class="MsoNormal">`, `<o:p>`). Markup goes through
+ * the allow-list; plain text is escaped and split into paragraphs on blank lines so
+ * the website does not collapse it into one run of words.
+ */
+export const toRenderableHtml = (value: string | null | undefined): string | null => {
+  if (!value || isBlankRichText(value)) return null;
+
+  const html = /<[a-z][^>]*>/i.test(value)
+    ? sanitizeRichText(value)
+    : value
+        .trim()
+        .split(/\r?\n\s*\r?\n/)
+        .map((block) => `<p>${escapeHtml(block.trim()).replace(/\r?\n/g, '<br>')}</p>`)
+        .join('');
+
+  return isBlankRichText(html) ? null : html;
+};
