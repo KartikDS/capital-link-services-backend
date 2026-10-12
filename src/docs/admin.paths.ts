@@ -831,6 +831,36 @@ export const adminPaths = {
     }),
   },
 
+  '/api/admin/content-pages/policies': {
+    get: operation('/api/admin/content-pages/policies', {
+      tag,
+      summary: 'The five policy pages',
+      description:
+        'A fixed list — Privacy Policy, Terms, Quality, Environmental, Health & Safety — each with whether staff have saved a copy and whether it is switched on. There is no "new page" for these.',
+      auth: 'bearer',
+      responses: { 200: okObject('Pages', { pages: { type: 'array', items: { type: 'object' } } }) },
+    }),
+  },
+
+  '/api/admin/content-pages/policies/{slug}': {
+    get: operation('/api/admin/content-pages/policies/{slug}', {
+      tag,
+      summary: 'One policy page, HTML included',
+      description: '`html` is empty until a copy has been saved; the admin then opens the editor on the wording the website ships.',
+      auth: 'bearer',
+      responses: { 200: okObject('Page', { page: { type: 'object' } }) },
+    }),
+    put: operation('/api/admin/content-pages/policies/{slug}', {
+      tag,
+      summary: 'Save a policy page',
+      description:
+        'Creates the row on first save, tagged with the slug. The HTML is rebuilt through an allow-list (headings, paragraphs, lists, emphasis, links, quotes, rules) — scripts, handlers and `javascript:` links are dropped. An empty editor stores nothing, so the website keeps its own wording. `active: false` keeps the copy but switches it off.',
+      auth: 'bearer',
+      body: { schema: body({ html: f.string(), active: { type: 'boolean' } }, ['html']) },
+      responses: { 200: okObject('Saved', { page: { type: 'object' } }) },
+    }),
+  },
+
   '/api/admin/content-pages': {
     get: operation('/api/admin/content-pages', {
       tag,

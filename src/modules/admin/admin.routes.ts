@@ -40,6 +40,7 @@ import { russianVoucherOrderRoutes } from './russianVoucherOrder';
 import { clearanceOrderRoutes } from './clearanceOrder';
 import { publicVisaOrderRoutes } from './publicVisaOrder';
 import { contentPageAdminRoutes, sectionAdminRoutes } from './content';
+import { policyPageAdminRoutes } from './policyPages';
 import {
   courierOptionAdminRoutes,
   discountAdminRoutes,
@@ -1255,6 +1256,8 @@ adminRoutes.use('/saudi-invitation-letters', saudiInvitationLetterAdminRoutes);
 adminRoutes.use('/free-visa-documents', freeVisaDocumentAdminRoutes);
 
 /** "Manage Content Pages" and "Manage Section" — see `content.ts`. */
+/** Mounted first: `/content-pages/:id` would otherwise swallow `policies`. */
+adminRoutes.use('/content-pages/policies', policyPageAdminRoutes);
 adminRoutes.use('/content-pages', contentPageAdminRoutes);
 adminRoutes.use('/sections', sectionAdminRoutes);
 

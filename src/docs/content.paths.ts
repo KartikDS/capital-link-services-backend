@@ -29,6 +29,21 @@ export const contentPaths = {
     }),
   },
 
+  '/api/content/policies/{slug}': {
+    get: operation('/api/content/policies/{slug}', {
+      tag,
+      summary: 'Saved copy for one of the five policy pages',
+      description:
+        'Privacy Policy, Terms, Quality, Environmental, Health & Safety — edited from Admin → Content Pages. Matches the stored slug exactly. Answers `available: false` (not 404) for a page nobody has saved, a switched-off one, or an unknown slug, so the website keeps the copy it ships.',
+      responses: {
+        200: okObject('The saved copy, or available: false', {
+          available: { type: 'boolean' },
+          page: { type: 'object', nullable: true },
+        }),
+      },
+    }),
+  },
+
   '/api/content/sections': {
     get: operation('/api/content/sections', {
       tag,

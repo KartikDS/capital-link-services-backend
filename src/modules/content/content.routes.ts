@@ -21,6 +21,7 @@ import { toCents } from '../../shared/money';
 import { clean, cleanOr, stripHtml, toBoolean, truncate } from '../../shared/text';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
 import { logger } from '../../shared/logger';
+import { findPolicyRow, isPolicySlug, policyTitle } from './policyPages';
 
 /**
  * Editable page copy, from the CMS tables.
@@ -56,6 +57,9 @@ const isPublished = {
     { status: { [Op.notIn]: ['draft', 'Draft', 'DRAFT', 'inactive', '0'] } },
   ],
 };
+
+const isPublishedStatus = (status: string | null): boolean =>
+  !['draft', 'inactive', '0'].includes((status ?? '').trim().toLowerCase());
 
 /**
  * GET /api/content/pages/:slug
@@ -103,6 +107,32 @@ contentRoutes.get(
     });
   }
 );
+
+/**
+ * GET /api/content/policies/:slug
+ *
+ * The five corporate pages whose copy is maintained from the admin — see
+ * `policyPages.ts`. Matches the stored slug exactly, unlike `/pages/:slug`,
+ * and answers `available: false` for an unsaved or switched-off page so the
+ * website keeps the copy it ships.
+ */
+contentRoutes.get('/policies/:slug', async (req: Request, res: Response) => {
+  const slug = String(req.params.slug ?? '');
+
+  if (!isPolicySlug(slug)) return ok(res, { available: false, page: null });
+
+  const row = await findPolicyRow(slug);
+  const html = clean(row?.html);
+
+  if (!row || !html || !isPublishedStatus(row.status)) {
+    return ok(res, { available: false, page: null });
+  }
+
+  ok(res, {
+    available: true,
+    page: { slug, title: policyTitle(slug), html },
+  });
+});
 
 /**
  * GET /api/content/sections?page=about
