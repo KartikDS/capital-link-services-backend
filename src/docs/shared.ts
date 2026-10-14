@@ -82,6 +82,20 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     description:
       'One of the stored filenames the row itself carries — not an arbitrary path, the endpoint checks it belongs to that row.',
   },
+  docId: {
+    name: 'docId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description: 'A document line on a legalisation order (`tbl_order_dl_checklist.id`).',
+  },
+  orderId: {
+    name: 'orderId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description: 'The order id (`tbl_cls_order.id`).',
+  },
   rowId: {
     name: 'rowId',
     in: 'path',
