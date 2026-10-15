@@ -27,7 +27,8 @@
     "models:generate": "tsx scripts/generateModels.ts",
     "prepare": "husky || true",
     "db:countries": "tsx scripts/checkCountrySlugs.ts",
-    "ops:migrate": "tsx scripts/applyOpsMigration.ts"
+    "ops:migrate": "tsx scripts/applyOpsMigration.ts",
+    "db:seed-countries": "tsx scripts/seedLocalCountries.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1118.0",
