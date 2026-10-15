@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { Op, type FindOptions, type WhereOptions } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
@@ -109,14 +110,21 @@ const joinTime = (hour: number | null, minute: number | null): string | null => 
 /** How far a legalisation order has got, by its four milestone stamps. */
 type LegalisationScanStatus = 'first' | 'second' | 'third' | 'fourth';
 
-const SCAN_ORDER: readonly LegalisationScanStatus[] = ['first', 'second', 'third', 'fourth'];
+const SCAN_ORDER: readonly LegalisationScanStatus[] = [
+  'first',
+  'second',
+  'third',
+  'fourth',
+];
 
 /** The further of two milestones. */
 const bump = (
   current: LegalisationScanStatus | null,
   next: LegalisationScanStatus
 ): LegalisationScanStatus =>
-  current === null || SCAN_ORDER.indexOf(next) > SCAN_ORDER.indexOf(current) ? next : current;
+  current === null || SCAN_ORDER.indexOf(next) > SCAN_ORDER.indexOf(current)
+    ? next
+    : current;
 
 /**
  * What a queue row shows that lives on other tables: how far the order has got
@@ -131,7 +139,9 @@ const loadQueueExtras = async (rows: ClsOrder[]) => {
   const orderIds = rows.map((row) => row.id);
   const teamIds = [
     ...new Set(
-      rows.map((row) => row.visa_cls_team_member).filter((id): id is number => id !== null)
+      rows
+        .map((row) => row.visa_cls_team_member)
+        .filter((id): id is number => id !== null)
     ),
   ];
 
@@ -152,19 +162,27 @@ const loadQueueExtras = async (rows: ClsOrder[]) => {
         })
       : [],
     teamIds.length > 0
-      ? UserAdmin.findAll({ where: { id: teamIds }, attributes: ['id', 'fname', 'lname'] })
+      ? UserAdmin.findAll({
+          where: { id: teamIds },
+          attributes: ['id', 'fname', 'lname'],
+        })
       : [],
   ]);
 
-  const teamName = new Map(teamRows.map((row) => [row.id, fullName(row.fname, row.lname)]));
+  const teamName = new Map(
+    teamRows.map((row) => [row.id, fullName(row.fname, row.lname)])
+  );
 
   const scanStatusOf = (orderId: number): LegalisationScanStatus | null => {
     let reached: LegalisationScanStatus | null = null;
     for (const stamp of stampRows.filter((one) => one.order_id === orderId)) {
       if (clean(stamp.visa_date_cls_received_all_items)) reached = bump(reached, 'first');
-      if (clean(stamp.visa_date_submitted_for_processing)) reached = bump(reached, 'second');
-      if (clean(stamp.visa_date_completed_and_received_at_cls)) reached = bump(reached, 'third');
-      if (clean(stamp.visa_date_order_on_route_and_closed)) reached = bump(reached, 'fourth');
+      if (clean(stamp.visa_date_submitted_for_processing))
+        reached = bump(reached, 'second');
+      if (clean(stamp.visa_date_completed_and_received_at_cls))
+        reached = bump(reached, 'third');
+      if (clean(stamp.visa_date_order_on_route_and_closed))
+        reached = bump(reached, 'fourth');
     }
     return reached;
   };
@@ -192,7 +210,9 @@ const loadQueueExtras = async (rows: ClsOrder[]) => {
   return {
     scanStatusOf,
     teamNameOf: (row: ClsOrder): string | null =>
-      row.visa_cls_team_member !== null ? (teamName.get(row.visa_cls_team_member) ?? null) : null,
+      row.visa_cls_team_member !== null
+        ? (teamName.get(row.visa_cls_team_member) ?? null)
+        : null,
     processLocationOf: (orderId: number): string | null => {
       const first = stampRows.find((one) => one.order_id === orderId);
       return first?.process_location_id
@@ -239,11 +259,23 @@ const COUNT_TTL_MS = 60_000;
  * `order_type`), so the total is cached for a minute per queue and search. The
  * page of rows is always read live.
  */
+/**
+ * What a count is cached under.
+ *
+ * Not `JSON.stringify`: Sequelize writes `OR` and `LIKE` conditions under symbol
+ * keys, which JSON drops, so every search collapsed onto the key of the
+ * unfiltered list. A search then showed the unfiltered total, and after one the
+ * full list showed the search's total — a one-page list whose Next button was
+ * disabled. `inspect` keeps symbol keys, so each filter counts under its own key.
+ */
+export const countKey = (where: unknown): string =>
+  inspect(where, { depth: null, breakLength: Infinity, sorted: true });
+
 const findPage = async (
   options: FindOptions
 ): Promise<{ rows: ClsOrder[]; count: number }> => {
   const [count, rows] = await Promise.all([
-    cached(`queue-count:${JSON.stringify(options.where)}`, COUNT_TTL_MS, () =>
+    cached(`queue-count:${countKey(options.where)}`, COUNT_TTL_MS, () =>
       ClsOrder.count({ where: options.where })
     ),
     ClsOrder.findAll(options),
