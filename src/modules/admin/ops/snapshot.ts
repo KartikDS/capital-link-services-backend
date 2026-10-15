@@ -149,6 +149,13 @@ const tablesExist = async (names: readonly string[]): Promise<boolean> => {
 export const templatesAvailable = (): Promise<boolean> =>
   tablesExist(['tbl_ops_route_template', 'tbl_ops_route_template_leg']);
 
+/** True once the table that holds proof of hand-recorded payments exists. */
+export const proofsAvailable = (): Promise<boolean> =>
+  tablesExist(['tbl_ops_payment_proof']);
+
+/** True once the table of documents that need no legalisation exists. */
+export const skipsAvailable = (): Promise<boolean> => tablesExist(['tbl_ops_doc_skip']);
+
 /** True once the rule tables (checks, department types, checklists, lists) exist. */
 export const configAvailable = (): Promise<boolean> =>
   tablesExist([
@@ -345,6 +352,8 @@ export interface DocView {
   ticks: Record<string, boolean>;
   verifiedAt: string | null;
   verifiedBy: string | null;
+  /** True when staff decided this document does not need legalising. Legs already back stay as history. */
+  skipped: boolean;
   legs: LegView[];
   currentLeg: number;
 }
@@ -381,6 +390,20 @@ export interface NextAction {
   itemId?: number;
 }
 
+export interface ReturnAddressView {
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  postcode: string | null;
+  countryId: number | null;
+  country: string | null;
+}
+
 export interface OrderOps {
   id: number;
   client: string;
@@ -397,6 +420,8 @@ export interface OrderOps {
   addressConfirmed: boolean;
   returnMethod: 'collect' | 'courier' | null;
   returnedAt: string | null;
+  /** Where the documents go back to, when CLS delivers. Null when none is on file. */
+  returnAddress: ReturnAddressView | null;
   stage: OpsStage;
   stageLabel: string;
   sla: (SlaClock & { dueAtIso: string }) | null;
@@ -515,7 +540,7 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
   if (raw.length === 0) return [];
   const orderIds = raw.map((r) => r.id);
 
-  const [docs, checks, legs, items, states] = await Promise.all([
+  const [docs, checks, legs, items, states, skips, addresses] = await Promise.all([
     sql<{
       id: number;
       order_no: number;
@@ -597,8 +622,55 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
          FROM tbl_ops_order_state WHERE order_id IN (:ids)`,
       { ids: orderIds }
     ),
+    skipsAvailable().then((on) =>
+      on
+        ? sql<{ doc_id: number }>(
+            `SELECT doc_id FROM tbl_ops_doc_skip WHERE order_id IN (:ids)`,
+            { ids: orderIds }
+          )
+        : []
+    ),
+    sql<{
+      order_id: number;
+      first_name: string | null;
+      last_name: string | null;
+      email: string | null;
+      contact_number: string | null;
+      company: string | null;
+      address: string | null;
+      city: string | null;
+      state: string | null;
+      postcode: string | null;
+      country_id: number | null;
+      country_name: string | null;
+    }>(
+      `SELECT r.order_id, r.first_name, r.last_name, r.email, r.contact_number, r.company,
+              r.address, r.city, r.state, r.postcode, r.country_id, c.country_name
+         FROM tbl_order_return_document_details r
+         LEFT JOIN tbl_countries c ON c.id = r.country_id
+        WHERE r.order_id IN (:ids) ORDER BY r.id`,
+      { ids: orderIds }
+    ),
   ]);
 
+  const skipped = new Set(skips.map((k) => k.doc_id));
+  const addressByOrder = new Map<number, ReturnAddressView>();
+  for (const a of addresses) {
+    if (addressByOrder.has(a.order_id)) continue;
+    addressByOrder.set(a.order_id, {
+      firstName: clean(a.first_name),
+      lastName: clean(a.last_name),
+      email: clean(a.email),
+      phone: clean(a.contact_number),
+      company: clean(a.company),
+      address: clean(a.address),
+      city: clean(a.city),
+      state: clean(a.state),
+      postcode: clean(a.postcode),
+      countryId: a.country_id,
+      country: clean(a.country_name),
+    });
+  }
   const checkByDoc = new Map(checks.map((c) => [c.doc_id, c]));
   const stateByOrder = new Map(states.map((s) => [s.order_id, s]));
   const legsByDoc = new Map<number, LegView[]>();
@@ -662,8 +734,9 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
       ticks,
       verifiedAt: toIso(check?.verified_at),
       verifiedBy: NAME_OF(staff.names, check?.verified_by),
+      skipped: skipped.has(d.id),
       legs: docLegs,
-      currentLeg: cur,
+      currentLeg: skipped.has(d.id) ? -1 : cur,
     };
     const list = docsByOrder.get(d.order_no) ?? [];
     list.push(view);
@@ -706,7 +779,11 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
     const stage = deriveStage({
       closed,
       assigned: r.assignee !== null && r.assignee !== 0,
-      docs: orderDocs.map((d) => ({ verification: d.verification, legs: d.legs })),
+      docs: orderDocs.map((d) => ({
+        verification: d.verification,
+        skipped: d.skipped,
+        legs: d.legs,
+      })),
       openItems: openItems.length,
     });
 
@@ -747,6 +824,7 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
       addressConfirmed: r.addr_ok === 1,
       returnMethod,
       returnedAt,
+      returnAddress: addressByOrder.get(r.id) ?? null,
       stage,
       stageLabel: STAGE_LABEL[stage],
       sla: clock ? { ...clock, dueAtIso: new Date(clock.dueAt).toISOString() } : null,
@@ -782,7 +860,6 @@ export const nextActionOf = (
   order: OrderOps,
   _names?: Map<number, string>
 ): NextAction => {
-  const n = order.docs.length;
   const plural = (k: number): string => (k === 1 ? '' : 's');
 
   switch (order.stage) {
@@ -851,13 +928,15 @@ export const nextActionOf = (
       };
     }
 
-    case 'route':
+    case 'route': {
+      const k = order.docs.filter((d) => !d.skipped && d.legs.length === 0).length;
       return {
-        text: `Plan the route for ${n} document${plural(n)}`,
+        text: `Plan the route for ${k} document${plural(k)}`,
         act: 'route',
         button: 'Apply suggested',
         waiting: false,
       };
+    }
 
     case 'process': {
       const cur = currentLegsOf(order);

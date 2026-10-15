@@ -1,6 +1,7 @@
 import {
   DEFAULT_SLA,
   deriveStage,
+  returnChecksOf,
   inCountryList,
   kindOfDoc,
   matchTemplate,
@@ -91,6 +92,17 @@ describe('deriveStage', () => {
         openItems: 0,
       })
     ).toBe('done');
+  });
+
+  it('leaves a document that needs no legalisation out of routing', () => {
+    const skipped = { ...doc('ok'), skipped: true };
+    const base = { closed: false, assigned: true, openItems: 0 };
+
+    expect(deriveStage({ ...base, docs: [skipped] })).toBe('ready');
+    expect(deriveStage({ ...base, docs: [skipped, doc('ok')] })).toBe('route');
+    expect(deriveStage({ ...base, docs: [skipped, doc('ok', ['out'])] })).toBe('process');
+    expect(deriveStage({ ...base, docs: [skipped, doc('ok', ['done'])] })).toBe('ready');
+    expect(deriveStage({ ...base, docs: [skipped, doc('pending')] })).toBe('verify');
   });
 
   it('keeps an order with no documents in verification rather than ready', () => {
@@ -207,5 +219,47 @@ describe('route templates', () => {
     expect(serviceFor('embassy', 'embassy')).toBe('Legalisation');
     expect(serviceFor('notary', 'apostille')).toBe('Notarise');
     expect(serviceFor(null, 'embassy')).toBe('Process');
+  });
+});
+
+describe('returnChecksOf', () => {
+  const base = {
+    docs: [{ legs: [{ status: 'done' as const }] }],
+    items: [],
+    payment: 'paid' as const,
+    returnMethod: null,
+    addressConfirmed: true,
+  };
+  const failing = (o: Parameters<typeof returnChecksOf>[0]) =>
+    returnChecksOf(o)
+      .filter((c) => !c.ok)
+      .map((c) => c.key);
+
+  it('passes when everything is back, clear, paid and addressed', () => {
+    expect(failing(base)).toEqual([]);
+  });
+
+  it('names what is missing', () => {
+    expect(
+      failing({
+        ...base,
+        docs: [{ legs: [{ status: 'out' as const }] }],
+        items: [{ resolved: false }],
+        payment: 'unpaid',
+        addressConfirmed: false,
+      })
+    ).toEqual(['legs', 'items', 'paid', 'ret']);
+  });
+
+  it('lets a client collect without a confirmed address', () => {
+    expect(
+      failing({ ...base, addressConfirmed: false, returnMethod: 'collect' })
+    ).toEqual([]);
+  });
+
+  it('counts a skipped document as done, but not an empty order', () => {
+    expect(failing({ ...base, docs: [{ skipped: true, legs: [] }] })).toEqual([]);
+    expect(failing({ ...base, docs: [{ legs: [] }] })).toEqual(['legs']);
+    expect(failing({ ...base, docs: [] })).toEqual(['legs']);
   });
 });

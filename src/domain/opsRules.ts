@@ -205,6 +205,8 @@ export interface StageInput {
   assigned: boolean;
   docs: {
     verification: 'pending' | 'ok' | 'issue';
+    /** Staff marked it as not needing legalisation: it takes no route. */
+    skipped?: boolean;
     legs: { status: 'todo' | 'out' | 'done' }[];
   }[];
   openItems: number;
@@ -221,8 +223,9 @@ export const deriveStage = (input: StageInput): OpsStage => {
   if (input.docs.some((d) => d.verification === 'pending')) return 'verify';
   if (input.openItems > 0 || input.docs.some((d) => d.verification === 'issue'))
     return 'pending';
-  if (input.docs.some((d) => d.legs.length === 0)) return 'route';
-  if (input.docs.some((d) => d.legs.some((l) => l.status !== 'done'))) return 'process';
+  const routed = input.docs.filter((d) => !d.skipped);
+  if (routed.some((d) => d.legs.length === 0)) return 'route';
+  if (routed.some((d) => d.legs.some((l) => l.status !== 'done'))) return 'process';
   return 'ready';
 };
 
@@ -293,3 +296,63 @@ export const slaFor = (input: SlaInput, sla: SlaSettings): SlaClock | null => {
   const leftMs = dueAt - now;
   return { label, dueAt, leftMs, state: slaState(leftMs, windowMs) };
 };
+
+// ---------------------------------------------------------------------------
+// Returning an order to the client
+// ---------------------------------------------------------------------------
+
+export interface ReturnCheckInput {
+  docs: { skipped?: boolean; legs: { status: 'todo' | 'out' | 'done' }[] }[];
+  items: { resolved: boolean }[];
+  payment: 'paid' | 'unpaid';
+  returnMethod: 'collect' | 'courier' | null;
+  addressConfirmed: boolean;
+}
+
+export interface ReturnCheck {
+  key: 'legs' | 'items' | 'paid' | 'ret';
+  ok: boolean;
+  text: string;
+  bad: string;
+}
+
+/**
+ * What must hold before an order goes back to the client. The order screen shows
+ * these as a list and greys its buttons out until they pass; the return endpoint
+ * enforces the same list, so a stale tab or a direct call cannot close an unpaid
+ * order. A document marked as not needing legalisation has no route to finish.
+ */
+export const returnChecksOf = (o: ReturnCheckInput): ReturnCheck[] => [
+  {
+    key: 'legs',
+    ok:
+      o.docs.length > 0 &&
+      o.docs.every(
+        (d) =>
+          d.skipped || (d.legs.length > 0 && d.legs.every((l) => l.status === 'done'))
+      ),
+    text: 'Every document back and checked by CLS',
+    bad: 'Documents still at a department',
+  },
+  {
+    key: 'items',
+    ok: !o.items.some((i) => !i.resolved),
+    text: 'No open items with the client or a department',
+    bad: 'Open items remain',
+  },
+  {
+    key: 'paid',
+    ok: o.payment === 'paid',
+    text: 'Invoice paid',
+    bad: 'Payment not recorded as paid',
+  },
+  {
+    key: 'ret',
+    ok: o.returnMethod === 'collect' || o.addressConfirmed,
+    text:
+      o.returnMethod === 'collect'
+        ? 'Client collects from the office'
+        : 'Return address confirmed by the client',
+    bad: 'Return address not confirmed',
+  },
+];

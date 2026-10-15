@@ -299,12 +299,50 @@ export const adminOpsPaths = merge([
     }
   ),
   entry(
+    `${P}/orders/{id}/return-address`,
+    'put',
+    'Set the return address and confirm it',
+    'Creates or replaces the address the documents go back to, and marks it confirmed so Dispatch unlocks. Allowed at any stage, closed orders included: a client can change their mind after collecting.',
+    {
+      body: body(
+        {
+          firstName: f.string(),
+          lastName: f.string(),
+          company: f.string(),
+          email: f.string(),
+          phone: f.string(),
+          address: f.string(),
+          city: f.string(),
+          state: f.string(),
+          postcode: f.string(),
+          countryId: f.int(),
+        },
+        ['address', 'city']
+      ),
+    }
+  ),
+  entry(
+    `${P}/orders/{id}/return/dispatch-instead`,
+    'post',
+    'Change a collected order to a dispatch',
+    'For a closed order handed over for collection whose client now wants CLS to deliver. Needs a confirmed return address; records the change and leaves the order closed with the courier as its method.'
+  ),
+  entry(
+    `${P}/orders/{id}/docs/{docId}/legalise`,
+    'put',
+    'Mark a document as needing, or not needing, legalisation',
+    'required=false takes the document out of routing: its unsent legs are removed, legs already back stay as history, and it no longer holds the order back from being returned. Refused while a leg is out at a department. required=true puts it back.',
+    {
+      body: body({ required: { type: 'boolean' } }, ['required']),
+    }
+  ),
+  entry(
     `${P}/orders/{id}/docs/{docId}/legs`,
     'post',
     'Add a leg to a document',
     'Appends a stop to the route.',
     {
-      body: body({ departmentId: f.int(), price: f.int() }, ['departmentId']),
+      body: body({ departmentId: f.int(), price: f.int() }, ['departmentId', 'price']),
     }
   ),
   entry(

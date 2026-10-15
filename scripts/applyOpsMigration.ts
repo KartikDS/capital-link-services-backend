@@ -1,8 +1,8 @@
 /**
  * Applies the CLS Ops migration to a database, outside the application.
  *
- * `npm run ops:migrate`            applies 2026-10-14-ops-document-routes.sql
- * `npm run ops:migrate -- --undo`  drops the tables that migration created
+ * `npm run ops:migrate`            applies every db/migrations/*.sql, oldest first
+ * `npm run ops:migrate -- --undo`  runs the *.undo.sql files, newest first
  *
  * The API itself never issues DDL (see `config/database.ts`), so this is a
  * separate process with its own connection. It is deliberately narrow:
@@ -28,11 +28,13 @@ dotenv.config({ quiet: true });
 
 const undo = process.argv.includes('--undo');
 const allowRemote = process.argv.includes('--allow-remote');
-const file = path.resolve(
-  __dirname,
-  '../db/migrations',
-  undo ? '2026-10-14-ops-document-routes.undo.sql' : '2026-10-14-ops-document-routes.sql'
-);
+const dir = path.resolve(__dirname, '../db/migrations');
+const files = fs
+  .readdirSync(dir)
+  .filter((name) => /^\d{4}-\d{2}-\d{2}-ops-.+\.sql$/.test(name))
+  .filter((name) => name.endsWith('.undo.sql') === undo)
+  .sort();
+if (undo) files.reverse();
 
 const ALLOWED = undo
   ? [/^DROP TABLE IF EXISTS `tbl_ops_[a-z_]+`$/i]
@@ -60,7 +62,9 @@ const main = async (): Promise<void> => {
     );
   }
 
-  const statements = statementsOf(fs.readFileSync(file, 'utf8'));
+  const statements = files.flatMap((name) =>
+    statementsOf(fs.readFileSync(path.join(dir, name), 'utf8'))
+  );
   const bad = statements.find((s) => !ALLOWED.some((re) => re.test(s)));
   if (bad)
     throw new Error(
@@ -93,9 +97,7 @@ const main = async (): Promise<void> => {
     return out;
   };
 
-  console.log(
-    `${undo ? 'UNDO' : 'APPLY'} ${path.basename(file)} on ${process.env.DB_NAME}`
-  );
+  console.log(`${undo ? 'UNDO' : 'APPLY'} ${files.join(', ')} on ${process.env.DB_NAME}`);
   const before = await snapshot();
   console.log(`Snapshotted ${before.size} existing tables (checksum + row count).`);
 

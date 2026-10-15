@@ -2,7 +2,7 @@ import { QueryTypes, type Transaction } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { sequelize } from '../../../config/database';
-import { ClsOrder } from '../../../models';
+import { ClsOrder, OrderReturnDocumentDetails } from '../../../models';
 import { currentUserId } from '../../../middleware/authenticate';
 import {
   badRequest,
@@ -23,6 +23,7 @@ import {
   serviceFor,
   uniqueCode,
   type ListKey,
+  returnChecksOf,
 } from '../../../domain/opsRules';
 import {
   AUTOMATION_KEYS,
@@ -39,6 +40,7 @@ import {
   readAutomation,
   readSla,
   sql,
+  skipsAvailable,
   templatesAvailable,
   type DocView,
   type LegView,
@@ -767,39 +769,7 @@ export const opsRoutes = (audit: Audit): Router => {
   // One order
   // -------------------------------------------------------------------------
 
-  const returnChecks = (o: OrderOps) => [
-    {
-      key: 'legs',
-      ok:
-        o.docs.length > 0 &&
-        o.docs.every(
-          (d) => d.legs.length > 0 && d.legs.every((l) => l.status === 'done')
-        ),
-      text: 'Every document back and checked by CLS',
-      bad: 'Documents still at a department',
-    },
-    {
-      key: 'items',
-      ok: !o.items.some((i) => !i.resolved),
-      text: 'No open items with the client or a department',
-      bad: 'Open items remain',
-    },
-    {
-      key: 'paid',
-      ok: o.payment === 'paid',
-      text: 'Invoice paid',
-      bad: 'Payment not recorded as paid',
-    },
-    {
-      key: 'ret',
-      ok: o.returnMethod === 'collect' || o.addressConfirmed,
-      text:
-        o.returnMethod === 'collect'
-          ? 'Client collects from the office'
-          : 'Return address confirmed by the client',
-      bad: 'Return address not confirmed',
-    },
-  ];
+  const returnChecks = (o: OrderOps) => returnChecksOf(o);
 
   const orderPayload = async (id: number, me: number) => {
     const [order, staff, activityRows] = await Promise.all([
@@ -1376,7 +1346,7 @@ export const opsRoutes = (audit: Audit): Router => {
 
       const notes: string[] = [];
       await sequelize.transaction(async (t) => {
-        for (const doc of order.docs.filter((d) => d.legs.length === 0)) {
+        for (const doc of order.docs.filter((d) => !d.skipped && d.legs.length === 0)) {
           notes.push(...(await applyRouteTo(order, doc, me, t)));
         }
         await activity(id, 'route', 'Suggested route applied', me, t);
@@ -1411,6 +1381,10 @@ export const opsRoutes = (audit: Audit): Router => {
       needClaimed(order);
       readyToRoute(order);
       const doc = docOf(order, docId);
+      if (doc.skipped)
+        throw conflict(
+          'This document is marked as not needing legalisation. Mark it as needing legalisation before planning a route.'
+        );
       if (doc.legs.some((l) => l.status !== 'todo')) {
         throw conflict(
           'This document has already left CLS, so its route can no longer be replaced.'
@@ -1478,7 +1452,12 @@ export const opsRoutes = (audit: Audit): Router => {
     validate(
       z.object({
         departmentId: bodyId,
-        price: z.coerce.number().min(0).max(99999).optional(),
+        // Compulsory: a leg with no price is a cost nobody has looked at.
+        // A blank box is not a price of zero.
+        price: z.preprocess(
+          (value) => (value === '' || value === null ? undefined : value),
+          z.coerce.number({ message: 'Enter the price for this leg.' }).min(0).max(99999)
+        ),
       })
     ),
     async (req, res) => {
@@ -1486,7 +1465,7 @@ export const opsRoutes = (audit: Audit): Router => {
       const me = currentUserId(req);
       const { departmentId, price } = req.body as {
         departmentId: number;
-        price?: number;
+        price: number;
       };
       const order = await need(id);
       notClosed(order);
@@ -1494,6 +1473,10 @@ export const opsRoutes = (audit: Audit): Router => {
       const doc = docOf(order, docId);
       if (doc.verification !== 'ok')
         throw conflict('Verify the document before adding a leg.');
+      if (doc.skipped)
+        throw conflict(
+          'This document is marked as not needing legalisation. Mark it as needing legalisation before adding a leg.'
+        );
 
       const [dept] = await sql<{
         id: number;
@@ -1525,6 +1508,74 @@ export const opsRoutes = (audit: Audit): Router => {
         detail: { department: dept.short_name },
       });
       await activity(id, 'route', `${dept.short_name} leg added to ${doc.type}`, me);
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  router.put(
+    '/orders/:id/docs/:docId/legalise',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    validate(z.object({ required: z.boolean() })),
+    async (req, res) => {
+      const { id, docId } = validParams<{ id: number; docId: number }>(req);
+      const me = currentUserId(req);
+      const { required } = req.body as { required: boolean };
+      const order = await need(id);
+      notClosed(order);
+      needClaimed(order);
+      readyToRoute(order);
+      const doc = docOf(order, docId);
+
+      if (!(await skipsAvailable()))
+        throw conflict(
+          'Marking a document as not needing legalisation is not switched on for this database yet.'
+        );
+
+      await sequelize.transaction(async (t) => {
+        if (required) {
+          if (doc.skipped) {
+            await exec(
+              `DELETE FROM tbl_ops_doc_skip WHERE doc_id = :docId`,
+              { docId },
+              t
+            );
+            await activity(id, 'route', `${doc.type} needs legalisation again`, me, t);
+          }
+          return;
+        }
+        if (doc.skipped) return;
+
+        // Checked inside the transaction, on the rows themselves: a leg sent a
+        // moment ago is not in the snapshot this handler loaded.
+        const [row] = await sequelize.query<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM tbl_ops_doc_leg WHERE doc_id = :docId AND status = 'out' FOR UPDATE`,
+          { type: QueryTypes.SELECT, replacements: { docId }, transaction: t }
+        );
+        if (Number(row?.n ?? 0) > 0)
+          throw conflict(
+            'This document is at a department. Receive it back before marking it as not needing legalisation.'
+          );
+        await exec(
+          `DELETE FROM tbl_ops_doc_leg WHERE doc_id = :docId AND status = 'todo'`,
+          { docId },
+          t
+        );
+        await exec(
+          `INSERT INTO tbl_ops_doc_skip (order_id, doc_id, skipped_by, skipped_at)
+           VALUES (:id, :docId, :me, :at)
+           ON DUPLICATE KEY UPDATE skipped_by = VALUES(skipped_by), skipped_at = VALUES(skipped_at)`,
+          { id, docId, me, at: stamp() },
+          t
+        );
+        await activity(
+          id,
+          'route',
+          `${doc.type} marked as not needing legalisation`,
+          me,
+          t
+        );
+      });
+      await audit(req, 'ops.route.legalise', { orderId: id, docId, required });
       done(res, await orderPayload(id, me));
     }
   );
@@ -1869,6 +1920,14 @@ export const opsRoutes = (audit: Audit): Router => {
       if (method === 'collect' && !by)
         throw badRequest('Enter who collected the documents.');
 
+      // The screen greys the buttons out until these hold; the API holds the same
+      // line, so a stale tab or a direct call cannot close an unpaid order.
+      const unmet = returnChecks({ ...order, returnMethod: method }).filter((c) => !c.ok);
+      if (unmet.length)
+        throw conflict(
+          `This order cannot be returned yet: ${unmet.map((c) => c.bad.toLowerCase()).join('; ')}.`
+        );
+
       await exec(
         `INSERT INTO tbl_ops_order_state (order_id, return_method, returned_by, returned_at, created_at, updated_at)
          VALUES (:id, :method, :by, :at, :at, :at)
@@ -1889,6 +1948,126 @@ export const opsRoutes = (audit: Audit): Router => {
   );
 
   // -------------------------------------------------------------------------
+  // Where the documents go back to
+  // -------------------------------------------------------------------------
+
+  /**
+   * Sets the return address for an order — the one the client gave, corrected, or
+   * one staff take over the phone when a client who meant to collect asks CLS to
+   * deliver instead. Staff saying "the client confirmed this" is what marks the
+   * address confirmed, so Dispatch unlocks. Allowed at any stage, closed included:
+   * a client can change their mind after the documents were handed back.
+   */
+  router.put(
+    '/orders/:id/return-address',
+    validate(z.object({ id: idParam }), 'params'),
+    validate(
+      z.object({
+        firstName: z.string().trim().max(255).optional().default(''),
+        lastName: z.string().trim().max(255).optional().default(''),
+        company: z.string().trim().max(255).optional().default(''),
+        email: z.string().trim().max(255).optional().default(''),
+        phone: z.string().trim().max(255).optional().default(''),
+        address: z.string().trim().min(3, 'Enter the street address.').max(255),
+        city: z.string().trim().min(1, 'Enter the city.').max(255),
+        state: z.string().trim().max(255).optional().default(''),
+        postcode: z.string().trim().max(255).optional().default(''),
+        countryId: z.coerce.number().int().positive().nullable().optional(),
+      })
+    ),
+    async (req, res) => {
+      const { id } = validParams<{ id: number }>(req);
+      const me = currentUserId(req);
+      const b = req.body as {
+        firstName: string;
+        lastName: string;
+        company: string;
+        email: string;
+        phone: string;
+        address: string;
+        city: string;
+        state: string;
+        postcode: string;
+        countryId?: number | null;
+      };
+      const order = await need(id);
+      needClaimed(order);
+
+      const values = {
+        first_name: b.firstName || null,
+        last_name: b.lastName || null,
+        company: b.company || null,
+        email: b.email || null,
+        contact_number: b.phone || null,
+        address: b.address,
+        city: b.city,
+        state: b.state || null,
+        postcode: b.postcode || null,
+        country_id: b.countryId ?? null,
+        status: 1,
+      };
+
+      await sequelize.transaction(async (t) => {
+        const existing = await OrderReturnDocumentDetails.findOne({
+          where: { order_id: id },
+          order: [['id', 'ASC']],
+          transaction: t,
+        });
+        if (existing) await existing.update(values, { transaction: t });
+        else
+          await OrderReturnDocumentDetails.create(
+            { order_id: id, ...values },
+            { transaction: t }
+          );
+
+        await ClsOrder.update(
+          { is_address_confirmed: 1, date_last_saved: stamp() },
+          { where: { id }, transaction: t }
+        );
+        await activity(id, 'note', 'Return address set and confirmed by staff', me, t);
+      });
+      await audit(req, 'ops.return-address', { orderId: id });
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  /**
+   * A client who collected, or meant to, asks CLS to deliver after all. Closed
+   * orders cannot be returned a second time, so this is its own action: it needs
+   * a confirmed return address, records the change, and leaves the order closed
+   * with the courier as its method.
+   */
+  router.post(
+    '/orders/:id/return/dispatch-instead',
+    validate(z.object({ id: idParam }), 'params'),
+    async (req, res) => {
+      const { id } = validParams<{ id: number }>(req);
+      const me = currentUserId(req);
+      const order = await need(id);
+      if (order.stage !== 'done' || order.returnMethod !== 'collect')
+        throw conflict(
+          'Only an order handed over for collection can be changed to a dispatch.'
+        );
+      if (!order.addressConfirmed || !order.returnAddress)
+        throw conflict('Add and confirm the return address first.');
+
+      await exec(
+        `UPDATE tbl_ops_order_state SET return_method = 'courier', returned_by = NULL, returned_at = :at, updated_at = :at
+          WHERE order_id = :id`,
+        { id, at: stamp() }
+      );
+      await activity(
+        id,
+        'done',
+        'Client asked CLS to deliver instead of collecting. Dispatched to the return address.',
+        me
+      );
+      await audit(req, 'ops.return.dispatch-instead', { orderId: id });
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  // -------------------------------------------------------------------------
   // Document Hub
   // -------------------------------------------------------------------------
 
@@ -1897,6 +2076,7 @@ export const opsRoutes = (audit: Audit): Router => {
   const hubStateOf = (order: OrderOps, doc: DocView): HubState => {
     if (order.stage === 'done') return 'returned';
     if (doc.verification !== 'ok') return 'intake';
+    if (doc.skipped) return 'complete';
     if (doc.legs.length === 0) return 'unplanned';
     const leg = doc.legs[doc.currentLeg];
     if (!leg) return 'complete';
@@ -1942,6 +2122,7 @@ export const opsRoutes = (audit: Audit): Router => {
           price: leg?.price ?? null,
           sentAt: leg?.sentAt ?? null,
           legIndex: doc.currentLeg,
+          skipped: doc.skipped,
           legId: leg?.id ?? null,
           route: doc.legs.map((l, i) => ({
             id: l.id,
@@ -2047,6 +2228,14 @@ export const opsRoutes = (audit: Audit): Router => {
                 : 'To verify',
         },
       ];
+      if (doc.skipped)
+        steps.push({
+          title: 'No legalisation needed',
+          status: 'done',
+          at: null,
+          by: null,
+          note: 'Marked by staff. It takes no further route.',
+        });
       doc.legs.forEach((l, i) => {
         steps.push({
           title: `Sent to ${l.department}`,
