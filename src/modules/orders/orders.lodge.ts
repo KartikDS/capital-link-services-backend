@@ -390,6 +390,43 @@ const recordOrderNote = async (
   }
 };
 
+/**
+ * Remembers how the client wants the documents back, for the Ops return step.
+ *
+ * Best effort, and kept apart from the order itself: `tbl_ops_order_state` belongs
+ * to the Ops tables, which a database may not have yet, and a missing table must
+ * not cost the client their order. Until the order is returned the column holds
+ * the client's wish; returning the order overwrites it with what actually
+ * happened.
+ */
+const recordReturnPreference = async (
+  orderId: number,
+  handling: 'cls' | 'self' | null | undefined
+): Promise<void> => {
+  if (!handling) return;
+
+  try {
+    const at = toLegacyDateTime();
+    await sequelize.query(
+      `INSERT INTO tbl_ops_order_state (order_id, return_method, created_at, updated_at)
+       VALUES (:orderId, :method, :at, :at)
+       ON DUPLICATE KEY UPDATE return_method = :method, updated_at = :at`,
+      {
+        replacements: {
+          orderId,
+          method: handling === 'self' ? 'collect' : 'courier',
+          at,
+        },
+      }
+    );
+  } catch (error) {
+    logger.warn('Order lodged but the return preference could not be kept', {
+      orderId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 export interface LodgedOrder {
   reference: string;
   orderId: number;
@@ -526,6 +563,8 @@ export interface VoucherOrderInput {
   };
   comment?: string | null;
   courierOptionId?: number | null;
+  /** What the detail row has no column for. Written to `tbl_order_notes`. */
+  notes?: string | null;
 }
 
 /**
@@ -566,58 +605,67 @@ export const lodgeVoucherOrder = async (
     courierOptionId: input.courierOptionId,
   });
 
-  return sequelize.transaction(async (transaction) => {
-    const order = await createHeader(
-      {
-        clientId: input.clientId,
-        orderType: ORDER_TYPE.RUSSIAN_VISA_VOUCHER,
-        // Charged online: the payment moves it to placed.
-        placed: false,
-        contact: input.contact,
-        departureDate: input.departureDate,
-        applicants: input.applicants,
-        courierOptionId: input.courierOptionId,
-        quote,
-      },
-      transaction
-    );
+  return sequelize
+    .transaction(async (transaction) => {
+      const order = await createHeader(
+        {
+          clientId: input.clientId,
+          orderType: ORDER_TYPE.RUSSIAN_VISA_VOUCHER,
+          // Charged online: the payment moves it to placed.
+          placed: false,
+          contact: input.contact,
+          departureDate: input.departureDate,
+          applicants: input.applicants,
+          courierOptionId: input.courierOptionId,
+          quote,
+        },
+        transaction
+      );
 
-    await order.update({ russian_visa_voucher_id: input.voucherTypeId }, { transaction });
+      await order.update(
+        { russian_visa_voucher_id: input.voucherTypeId },
+        { transaction }
+      );
 
-    await RussianVisaVoucherOrderDetails.create(
-      {
-        order_id: order.id,
-        russian_visa_voucher_id: input.voucherTypeId,
-        voucher_col: VOUCHER_COL[input.tier],
-        voucher_col_cost: centsToLegacyString(quote.lines[0]?.unitCents ?? null),
-        first_entry_date: dateOnlyForWrite(input.entryDate),
-        first_departure_date: dateOnlyForWrite(input.departureDate),
-        double_entry_date: dateOnlyForWrite(input.secondEntryDate),
-        double_departure_date: dateOnlyForWrite(input.secondDepartureDate),
-        list_of_cities: clean(input.cities),
-        list_of_hotels: clean(input.hotels),
-        visa_applied_at: clean(input.appliedAt),
-        comment: clean(input.comment),
-        company: clean(input.employer?.company),
-        position: clean(input.employer?.position),
-        company_phone: clean(input.employer?.phone),
-        address: clean(input.employer?.address),
-        city: clean(input.employer?.city),
-        state: clean(input.employer?.state),
-        postcode: clean(input.employer?.postcode),
-        country_id: input.employer?.countryId ?? null,
-        // Same flag as the DL detail row above: `getRussianVisaVoucherOrderDetailsByOrderId`
-        // filters `rvvod.status = 1`, and `ApplicationRussianVisaVoucherController:487`
-        // writes it. At `0` the voucher's own details are invisible to the admin.
-        status: 1,
-      },
-      { transaction }
-    );
+      await RussianVisaVoucherOrderDetails.create(
+        {
+          order_id: order.id,
+          russian_visa_voucher_id: input.voucherTypeId,
+          voucher_col: VOUCHER_COL[input.tier],
+          voucher_col_cost: centsToLegacyString(quote.lines[0]?.unitCents ?? null),
+          first_entry_date: dateOnlyForWrite(input.entryDate),
+          first_departure_date: dateOnlyForWrite(input.departureDate),
+          double_entry_date: dateOnlyForWrite(input.secondEntryDate),
+          double_departure_date: dateOnlyForWrite(input.secondDepartureDate),
+          list_of_cities: clean(input.cities),
+          list_of_hotels: clean(input.hotels),
+          visa_applied_at: clean(input.appliedAt),
+          comment: clean(input.comment),
+          company: clean(input.employer?.company),
+          position: clean(input.employer?.position),
+          company_phone: clean(input.employer?.phone),
+          address: clean(input.employer?.address),
+          city: clean(input.employer?.city),
+          state: clean(input.employer?.state),
+          postcode: clean(input.employer?.postcode),
+          country_id: input.employer?.countryId ?? null,
+          // Same flag as the DL detail row above: `getRussianVisaVoucherOrderDetailsByOrderId`
+          // filters `rvvod.status = 1`, and `ApplicationRussianVisaVoucherController:487`
+          // writes it. At `0` the voucher's own details are invisible to the admin.
+          status: 1,
+        },
+        { transaction }
+      );
 
-    await createApplicants(order.id, input.applicants, transaction);
+      await createApplicants(order.id, input.applicants, transaction);
 
-    return finish(order, quote);
-  });
+      return finish(order, quote);
+    })
+    .then(async (lodged) => {
+      // After the commit: see `recordOrderNote` for why this cannot be inside it.
+      await recordOrderNote(lodged.orderId, input.notes);
+      return lodged;
+    });
 };
 
 // ---------------------------------------------------------------------------
@@ -641,6 +689,10 @@ export interface LegalisationOrderInput {
   courierOptionId?: number | null;
   /** The client's own reference for the job. `ref_no` on the detail row. */
   clientReference?: string | null;
+  /** The client's choice of personal or commercial documents. */
+  documentCategory?: 'personal' | 'commercial' | null;
+  /** `cls`: a courier returns the documents. `self`: the client handles it. */
+  deliveryHandling?: 'cls' | 'self' | null;
   /** `com_invoice_no`, which an export order is matched against downstream. */
   commercialInvoiceNumber?: string | null;
   /** The answers with no column of their own. Written to `tbl_order_notes`. */
@@ -707,6 +759,12 @@ export const lodgeLegalisationOrder = async (
           destination: input.destinationCountryId ?? null,
           nationality: input.nationalityCountryId ?? null,
           ref_no: clean(input.clientReference),
+          type_of_document:
+            input.documentCategory === 'commercial'
+              ? 1
+              : input.documentCategory === 'personal'
+                ? 2
+                : null,
           com_invoice_no: clean(input.commercialInvoiceNumber),
           /**
            * `1`, not `0`, and it is load-bearing.
@@ -812,6 +870,7 @@ export const lodgeLegalisationOrder = async (
     .then(async (lodged) => {
       // After the commit: see `recordOrderNote` for why this cannot be inside it.
       await recordOrderNote(lodged.orderId, input.notes);
+      await recordReturnPreference(lodged.orderId, input.deliveryHandling);
       return lodged;
     });
 };
@@ -837,6 +896,8 @@ export interface VisaOrderInput {
   additionalServiceIds?: readonly number[];
   courierOptionId?: number | null;
   returnAddress?: ReturnAddressInput;
+  /** The answers with no column of their own. Written to `tbl_order_notes`. */
+  notes?: string | null;
 }
 
 /**
@@ -938,6 +999,7 @@ export const lodgeVisaOrder = async (input: VisaOrderInput): Promise<LodgedOrder
        * written — see `domain/checklist`.
        */
       await materialiseChecklistQuietly(order);
+      await recordOrderNote(lodged.orderId, input.notes);
       return lodged;
     });
 };

@@ -184,6 +184,12 @@ export const voucherOrderSchema = z.object({
     .optional(),
   comment: z.string().trim().max(2000).optional().nullable(),
   courierOptionId: optionalId,
+  /**
+   * What the voucher's own row has no column for: the billing address, the plan
+   * as the client chose it, and the whole of their note. Written to
+   * `tbl_order_notes`, so the 2000 characters of `comment` are not the limit.
+   */
+  notes: z.string().trim().max(4000).optional().nullable(),
 });
 
 export const voucherQuoteSchema = z.object({
@@ -235,6 +241,18 @@ export const legalisationOrderSchema = z.object({
    * end, so losing it is losing the thread of the job.
    */
   clientReference: z.string().trim().max(220).optional().nullable(),
+  /**
+   * Personal or commercial, as the client chose it on the order form. Written to
+   * `type_of_document` (1 commercial, 2 personal), which the admin's Document
+   * details and the Ops route templates both read.
+   */
+  documentCategory: z.enum(['personal', 'commercial']).optional().nullable(),
+  /**
+   * Who moves the documents back: `cls` (a courier returns them) or `self` (the
+   * client collects or arranges their own return). Kept for the consultant, who
+   * closes the order the way the client asked.
+   */
+  deliveryHandling: z.enum(['cls', 'self']).optional().nullable(),
   commercialInvoiceNumber: z.string().trim().max(220).optional().nullable(),
 
   /**
@@ -286,6 +304,13 @@ export const visaOrderSchema = z.object({
   additionalServiceIds: z.array(id).max(50).optional(),
   courierOptionId: optionalId,
   returnAddress: returnAddressSchema.optional(),
+  /**
+   * Everything the client answered that no column can hold, as prepared text, for
+   * `tbl_order_notes`. The corporate visa journey asks for a company, a visa
+   * category, a stay, an entry type, an account and a purchase order, and none of
+   * those has a column.
+   */
+  notes: z.string().trim().max(4000).optional().nullable(),
 });
 
 export const visaQuoteSchema = z.object({

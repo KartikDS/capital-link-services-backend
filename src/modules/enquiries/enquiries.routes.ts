@@ -1,10 +1,5 @@
 import { Op } from 'sequelize';
-import {
-  Router,
-  type NextFunction,
-  type Request,
-  type Response,
-} from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Inquiries, TranslationServices } from '../../models';
 import { requireAdmin } from '../../middleware/authenticate';
@@ -17,16 +12,20 @@ import {
   packTranslationDocumentNames,
   translationDocumentPath,
 } from '../../domain/translationDocuments';
-import {
-  discardDocument,
-  storedPathOf,
-} from '../../shared/storage/documents';
+import { discardDocument, storedPathOf } from '../../shared/storage/documents';
 import { forbidden, notFound } from '../../shared/errors';
 import { created, message, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { clean, cleanOr, truncate } from '../../shared/text';
-import { emailField, idParam, phoneField, validate, validParams, validQuery } from '../../shared/validation';
+import {
+  emailField,
+  idParam,
+  phoneField,
+  validate,
+  validParams,
+  validQuery,
+} from '../../shared/validation';
 import { logger } from '../../shared/logger';
 
 /**
@@ -168,6 +167,9 @@ const visaEnquirySchema = baseEnquirySchema.extend({
   departureDate: z.string().trim().max(64).optional().nullable(),
   travellers: z.coerce.number().int().min(1).max(100).optional().nullable(),
   company: z.string().trim().max(255).optional().nullable(),
+  /** The state the applicant lives in, and the page the enquiry was sent from. */
+  stateOfResidency: z.string().trim().max(255).optional().nullable(),
+  sourcePath: z.string().trim().max(255).optional().nullable(),
   /**
    * How the applicant found CLS, already resolved to a label by the website.
    *
@@ -199,6 +201,8 @@ enquiryRoutes.post(
         departureDate: body.departureDate,
         travellers: body.travellers,
         company: body.company,
+        stateOfResidency: body.stateOfResidency,
+        sourcePath: body.sourcePath,
         heardAboutUs: body.heardAboutUs,
       }),
     });
@@ -280,9 +284,7 @@ const storedFilenameOf = (file: Express.Multer.File): string => {
  * `Promise.all` because this runs on a failure path where the count is at most
  * five and the log order is worth more than the millisecond.
  */
-const discardTranslationDocuments = async (
-  names: readonly string[]
-): Promise<void> => {
+const discardTranslationDocuments = async (names: readonly string[]): Promise<void> => {
   for (const name of names) {
     await discardDocument(translationDocumentPath(name));
   }
@@ -652,8 +654,7 @@ adminRoutes.post(
 
     ok(res, {
       enquiry: toEnquiryView(row),
-      note:
-        'Notes are appended to the enquiry text — this table has no separate notes column.',
+      note: 'Notes are appended to the enquiry text — this table has no separate notes column.',
     });
   }
 );
