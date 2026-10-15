@@ -258,13 +258,32 @@ describe('POST /payment/pay-now', () => {
   it('completes an existing unpaid payment row instead of adding a second', async () => {
     const res = await request(app)
       .post(`${base}/pay-now`)
-      .send({ method: 'marked-paid' });
+      .send({ method: 'marked-paid', paymentMethod: 'bank-transfer' });
 
     expect(res.status).toBe(200);
     expect(mockModels.Payment.create).not.toHaveBeenCalled();
     expect(payment.update).toHaveBeenCalledWith(
       expect.objectContaining({ s_paid: 2, payment_status: 1 })
     );
+  });
+
+  it('asks how a payment marked as paid was made', async () => {
+    const res = await request(app)
+      .post(`${base}/pay-now`)
+      .send({ method: 'marked-paid' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.fields).toMatchObject({ paymentMethod: expect.any(String) });
+    expect(mockModels.Payment.create).not.toHaveBeenCalled();
+    expect(payment.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a method it does not know', async () => {
+    const res = await request(app)
+      .post(`${base}/pay-now`)
+      .send({ method: 'marked-paid', paymentMethod: 'bitcoin' });
+
+    expect(res.status).toBe(400);
   });
 
   it('does not take a card', async () => {
@@ -277,7 +296,9 @@ describe('POST /payment/pay-now', () => {
     payment = makePayment({ s_paid: 1, payment_status: 1, total_order_price: '120.00' });
     mockModels.Payment.findOne.mockResolvedValue(payment);
 
-    const res = await request(app).post(`${base}/pay-now`).send({ method: 'marked-paid' });
+    const res = await request(app)
+      .post(`${base}/pay-now`)
+      .send({ method: 'marked-paid', paymentMethod: 'bank-transfer' });
 
     expect(res.status).toBe(409);
   });
@@ -285,7 +306,9 @@ describe('POST /payment/pay-now', () => {
   it('needs an amount when the order has no price', async () => {
     order.total_fee = null as never;
 
-    const res = await request(app).post(`${base}/pay-now`).send({ method: 'marked-paid' });
+    const res = await request(app)
+      .post(`${base}/pay-now`)
+      .send({ method: 'marked-paid', paymentMethod: 'bank-transfer' });
 
     expect(res.status).toBe(400);
   });

@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from 'express';
+import { QueryTypes } from 'sequelize';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
   ClsOrder,
@@ -22,6 +23,17 @@ import {
   PAYMENT_STATUS,
 } from '../../domain/codes';
 import { orderReference } from '../../domain/orderReference';
+import { sequelize } from '../../config/database';
+import { orderFileUpload } from '../../middleware/upload';
+import { currentUserId } from '../../middleware/authenticate';
+import { streamDocument } from '../../shared/http/streamDocument';
+import {
+  discardDocument,
+  openDocument,
+  storedPathOf,
+} from '../../shared/storage/documents';
+import { orderFolder } from '../../shared/storage/documentFolders';
+import { proofsAvailable } from './ops/snapshot';
 
 /**
  * The payment actions every admin order screen shares: Order Status, Payment
@@ -106,9 +118,84 @@ export interface AdminPaymentState {
   transactionId: string | null;
   /** Where the client's invoice and receipts go. */
   clientEmail: string | null;
+  /** Proof of payments staff marked as paid by hand, newest first. */
+  proofs: AdminPaymentProof[];
   /** The Pay Now form's starting values. */
-  payer: { firstName: string | null; lastName: string | null; email: string | null; phone: string | null };
+  payer: {
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+    phone: string | null;
+  };
 }
+
+/** How a hand-recorded payment was made, as the Mark as paid form offers it. */
+export const PAYMENT_METHODS = {
+  'bank-transfer': 'Bank transfer',
+  cash: 'Cash',
+  cheque: 'Cheque',
+  'card-outside': 'Card (paid outside this system)',
+  paypal: 'PayPal',
+  other: 'Other',
+} as const;
+
+export type PaymentMethodCode = keyof typeof PAYMENT_METHODS;
+
+export interface AdminPaymentProof {
+  id: number;
+  method: string;
+  methodLabel: string;
+  reference: string | null;
+  amountCents: number | null;
+  paidOn: string | null;
+  note: string | null;
+  fileName: string | null;
+  hasFile: boolean;
+  recordedBy: string | null;
+  recordedAt: string | null;
+}
+
+interface ProofRow {
+  id: number;
+  method: string;
+  reference: string | null;
+  amount: string | null;
+  paid_on: string | null;
+  note: string | null;
+  file: string | null;
+  file_name: string | null;
+  recorded_by: number | null;
+  recorded_at: string | null;
+  recorded_name: string | null;
+}
+
+const readProofs = async (orderId: number): Promise<AdminPaymentProof[]> => {
+  if (!(await proofsAvailable())) return [];
+
+  const rows = await sequelize.query<ProofRow>(
+    `SELECT p.id, p.method, p.reference, p.amount, p.paid_on, p.note, p.file, p.file_name,
+            p.recorded_by, p.recorded_at,
+            TRIM(CONCAT(COALESCE(a.fname, ''), ' ', COALESCE(a.lname, ''))) AS recorded_name
+       FROM tbl_ops_payment_proof p
+       LEFT JOIN tbl_user_admin a ON a.id = p.recorded_by
+      WHERE p.order_id = :orderId ORDER BY p.id DESC`,
+    { type: QueryTypes.SELECT, replacements: { orderId } }
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    method: r.method,
+    methodLabel: PAYMENT_METHODS[r.method as PaymentMethodCode] ?? r.method,
+    reference: clean(r.reference),
+    amountCents: r.amount === null ? null : toCents(r.amount),
+    paidOn: clean(r.paid_on)?.slice(0, 10) ?? null,
+    note: clean(r.note),
+    fileName: clean(r.file_name),
+    hasFile: Boolean(clean(r.file)),
+    recordedBy: clean(r.recorded_name),
+    recordedAt: toIso(r.recorded_at),
+  }));
+};
 
 export interface AdminPayNowNotification {
   orderId: number;
@@ -160,8 +247,18 @@ export interface AdminInvoiceData {
     phone: string | null;
     mobile: string | null;
     accountNumber: string | null;
-    address: { line1: string | null; city: string | null; state: string | null; postcode: string | null };
-    billing: { line1: string | null; city: string | null; state: string | null; postcode: string | null };
+    address: {
+      line1: string | null;
+      city: string | null;
+      state: string | null;
+      postcode: string | null;
+    };
+    billing: {
+      line1: string | null;
+      city: string | null;
+      state: string | null;
+      postcode: string | null;
+    };
   };
   applicant: string | null;
   orderNo: string;
@@ -187,9 +284,10 @@ export const loadAnyOrder = async (id: number): Promise<ClsOrder> => {
 
 /** Everything the Payment Details panel renders. Exported for the screens' own GETs. */
 export const readPaymentState = async (order: ClsOrder): Promise<AdminPaymentState> => {
-  const [client, payment] = await Promise.all([
+  const [client, payment, proofs] = await Promise.all([
     order.client_id ? UserClient.findByPk(order.client_id) : null,
     newestPayment(order.id),
+    readProofs(order.id),
   ]);
 
   return {
@@ -209,6 +307,7 @@ export const readPaymentState = async (order: ClsOrder): Promise<AdminPaymentSta
         : null,
     paidAt: payment ? toIso(payment.date_paid) : null,
     transactionId: clean(payment?.transaction_id),
+    proofs,
     clientEmail: clean(client?.email) ?? clean(order.contact_email),
     payer: {
       firstName: clean(payment?.fname) ?? clean(order.contact_first_name),
@@ -235,6 +334,17 @@ const payNowSchema = z.object({
   method: z.enum(['account', 'marked-paid']),
   accountNumber: z.string().trim().max(50).optional(),
   amountCents: z.coerce.number().int().positive().max(100_000_000).optional(),
+  /** Marked as paid only: how it was paid, and the details that prove it. */
+  paymentMethod: z
+    .enum(Object.keys(PAYMENT_METHODS) as [PaymentMethodCode, ...PaymentMethodCode[]])
+    .optional(),
+  reference: z.string().trim().max(120).optional(),
+  paidOn: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use the date picker to choose a date')
+    .optional(),
+  note: z.string().trim().max(500).optional(),
   payer: z
     .object({
       firstName: z.string().trim().max(255).optional(),
@@ -305,10 +415,18 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
           status: body.orderStatus,
           date_last_saved: toLegacyDateTime(),
         });
-        await audit(req, 'order.status', { orderId: id, from: previous, to: body.orderStatus });
+        await audit(req, 'order.status', {
+          orderId: id,
+          from: previous,
+          to: body.orderStatus,
+        });
       }
 
-      if (payment && body.paymentStatus !== undefined && body.paymentStatus !== payment.s_paid) {
+      if (
+        payment &&
+        body.paymentStatus !== undefined &&
+        body.paymentStatus !== payment.s_paid
+      ) {
         const previous = payment.s_paid;
         await payment.update({ s_paid: body.paymentStatus });
         await audit(req, 'order.payment-status', {
@@ -331,13 +449,64 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
     }
   );
 
+  /**
+   * One optional file with the payment: the screenshot or receipt that shows how
+   * it was paid. Multer only handles multipart requests, so a plain JSON Pay Now
+   * passes straight through. The JSON fields of a multipart one arrive as a
+   * single `payload` string, because a form cannot carry the nested `payer`.
+   */
+  const proofUpload = orderFileUpload(async (req) => {
+    const order = await loadAnyOrder(Number(req.params.id));
+    return orderFolder({ id: order.id, client_id: order.client_id });
+  });
+
+  /** A refused request must not leave its upload behind. */
+  const discardUploadOnFailure = (
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): void => {
+    res.on('finish', () => {
+      if (res.statusCode >= 400 && req.file) void discardDocument(storedPathOf(req.file));
+    });
+    next();
+  };
+
+  const readPayload = (req: Request, _res: Response, next: NextFunction): void => {
+    const raw = (req.body as { payload?: unknown } | undefined)?.payload;
+    if (typeof raw === 'string') {
+      try {
+        req.body = JSON.parse(raw) as unknown;
+      } catch {
+        next(badRequest('That payment could not be read. Try again.'));
+        return;
+      }
+    }
+    next();
+  };
+
   router.post(
     '/:id/payment/pay-now',
     idParams,
+    proofUpload,
+    discardUploadOnFailure,
+    readPayload,
     validate(payNowSchema),
     async (req: Request, res: Response) => {
       const { id } = validParams<{ id: number }>(req);
       const body = req.body as z.infer<typeof payNowSchema>;
+
+      if (body.method === 'marked-paid' && !body.paymentMethod) {
+        throw badRequest('Choose how it was paid.', {
+          paymentMethod: 'Choose how it was paid.',
+        });
+      }
+      const proofsOn = await proofsAvailable();
+      if (req.file && !proofsOn) {
+        throw conflict(
+          'Attaching proof of payment is not switched on for this database yet.'
+        );
+      }
 
       const order = await loadAnyOrder(id);
       const state = await readPaymentState(order);
@@ -413,11 +582,38 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
         date_last_saved: now,
       });
 
+      // The proof is kept apart from tbl_payment, whose columns are the legacy's.
+      // It records how the money actually arrived, for whoever reconciles it.
+      if (body.method === 'marked-paid' && body.paymentMethod && proofsOn) {
+        await sequelize.query(
+          `INSERT INTO tbl_ops_payment_proof
+             (order_id, payment_id, method, reference, amount, paid_on, note, file, file_name, recorded_by, recorded_at)
+           VALUES (:orderId, :paymentId, :method, :reference, :amount, :paidOn, :note, :file, :fileName, :by, :at)`,
+          {
+            replacements: {
+              orderId: id,
+              paymentId: payment.id,
+              method: body.paymentMethod,
+              reference: clean(body.reference),
+              amount: centsToNumber(amountCents),
+              paidOn: body.paidOn ?? null,
+              note: clean(body.note),
+              file: req.file ? storedPathOf(req.file) : null,
+              fileName: req.file ? req.file.originalname.slice(0, 255) : null,
+              by: currentUserId(req),
+              at: now,
+            },
+          }
+        );
+      }
+
       await audit(req, 'order.pay-now', {
         orderId: id,
         method: body.method,
         amountCents,
         paymentId: payment.id,
+        ...(body.paymentMethod ? { paymentMethod: body.paymentMethod } : {}),
+        ...(req.file ? { proof: true } : {}),
       });
 
       const notification: AdminPayNowNotification = {
@@ -435,6 +631,37 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
       };
 
       ok(res, { payment: await readPaymentState(order), notification });
+    }
+  );
+
+  /** The screenshot or receipt kept with a hand-recorded payment. */
+  router.get(
+    '/:id/payment/proofs/:proofId/file',
+    validate(z.object({ id: idParam, proofId: idParam }), 'params'),
+    async (req: Request, res: Response) => {
+      const { id, proofId } = validParams<{ id: number; proofId: number }>(req);
+      await loadAnyOrder(id);
+
+      const [row] = await sequelize.query<{
+        file: string | null;
+        file_name: string | null;
+      }>(
+        `SELECT file, file_name FROM tbl_ops_payment_proof WHERE id = :proofId AND order_id = :id`,
+        { type: QueryTypes.SELECT, replacements: { proofId, id } }
+      );
+      const stored = clean(row?.file);
+      if (!row || !stored) throw notFound('That payment has no file attached.');
+
+      const opened = await openDocument(stored);
+      if (!opened)
+        throw notFound('We hold a record of that file but not the file itself.');
+
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${(clean(row.file_name) ?? 'proof').replace(/[^\w.\- ]/g, '_')}"`
+      );
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      streamDocument(opened, res, { orderId: id });
     }
   );
 
@@ -456,7 +683,9 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
       describeService(order),
     ]);
 
-    const settled = payments.some((row) => row.payment_status === PAYMENT_STATUS.COMPLETE);
+    const settled = payments.some(
+      (row) => row.payment_status === PAYMENT_STATUS.COMPLETE
+    );
     const issuedAt = toIso(order.date_submitted);
 
     const data: AdminInvoiceData = {
@@ -468,7 +697,8 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
         issuedAt,
         dueAt: null,
         amountCents,
-        state: settled || order.payment_status === PAYMENT_STATUS.COMPLETE ? 'paid' : 'due',
+        state:
+          settled || order.payment_status === PAYMENT_STATUS.COMPLETE ? 'paid' : 'due',
         lines: [
           {
             description: service,
@@ -509,7 +739,9 @@ export const orderPaymentRoutes = (audit: PaymentAudit): Router => {
           postcode: clean(client?.mba_postcode),
         },
       },
-      applicant: traveller ? fullName(traveller.first_name, traveller.last_name) || null : null,
+      applicant: traveller
+        ? fullName(traveller.first_name, traveller.last_name) || null
+        : null,
       orderNo: orderNoOf(order),
     };
 

@@ -32,7 +32,7 @@ export const adminVoucherPaths = {
       tag,
       summary: 'Order Progress → Submit — the four milestone stamps',
       description:
-        'Each stamp is an ISO-8601 instant, a naive `YYYY-MM-DDTHH:mm[:ss]` (Sydney wall-clock) or `\'\'` to clear; absent means unchanged. Nothing is written when no stamp differs from the stored one.\n\n`notification.scantype` is the **first** changed stamp in the legacy priority order (`first` received, `second` submitted, `third` completed, `fourth` closed) — or `\'\'`; the website uses it to email the client. Clearing a stamp is not a milestone. Newly setting the closed stamp moves the order to status 2.',
+        "Each stamp is an ISO-8601 instant, a naive `YYYY-MM-DDTHH:mm[:ss]` (Sydney wall-clock) or `''` to clear; absent means unchanged. Nothing is written when no stamp differs from the stored one.\n\n`notification.scantype` is the **first** changed stamp in the legacy priority order (`first` received, `second` submitted, `third` completed, `fourth` closed) — or `''`; the website uses it to email the client. Clearing a stamp is not a milestone. Newly setting the closed stamp moves the order to status 2.",
       auth: 'bearer',
       body: {
         schema: body({
@@ -91,8 +91,16 @@ export const adminVoucherPaths = {
       auth: 'bearer',
       body: {
         schema: body({
-          orderStatus: { type: 'integer', enum: [0, 1, 2], description: 'Pending, Completed, CLS Confirmed.' },
-          paymentStatus: { type: 'integer', enum: [0, 1, 2], description: 'Pending, Paid - Online, Paid - By Account.' },
+          orderStatus: {
+            type: 'integer',
+            enum: [0, 1, 2],
+            description: 'Pending, Completed, CLS Confirmed.',
+          },
+          paymentStatus: {
+            type: 'integer',
+            enum: [0, 1, 2],
+            description: 'Pending, Paid - Online, Paid - By Account.',
+          },
           accountNumber: f.string('The client’s account number; empty clears it.'),
         }),
       },
@@ -118,16 +126,55 @@ export const adminVoucherPaths = {
             method: { type: 'string', enum: ['account', 'marked-paid'] },
             accountNumber: f.string(),
             amountCents: f.cents('Defaults to the order total.'),
-            payer: { type: 'object', description: 'firstName, lastName, email, phone — default to the order contact.' },
+            paymentMethod: {
+              type: 'string',
+              enum: [
+                'bank-transfer',
+                'cash',
+                'cheque',
+                'card-outside',
+                'paypal',
+                'other',
+              ],
+              description: 'Required for `marked-paid`: how it was actually paid.',
+            },
+            reference: f.string('Bank reference, receipt or cheque number.'),
+            paidOn: f.string('YYYY-MM-DD.'),
+            note: f.string(),
+            payer: {
+              type: 'object',
+              description:
+                'firstName, lastName, email, phone — default to the order contact.',
+            },
           },
           ['method']
         ),
       },
       responses: {
-        200: okObject('Recorded', { payment: { type: 'object' }, notification: { type: 'object' } }),
+        200: okObject('Recorded', {
+          payment: { type: 'object' },
+          notification: { type: 'object' },
+        }),
         400: { $ref: '#/components/responses/BadRequest' },
         404: { $ref: '#/components/responses/NotFound' },
         409: { description: 'Already recorded as paid.' },
+      },
+    }),
+  },
+
+  '/api/admin/orders/{id}/payment/proofs/{proofId}/file': {
+    get: operation('/api/admin/orders/{id}/payment/proofs/{proofId}/file', {
+      tag,
+      summary: 'The screenshot or receipt kept with a hand-recorded payment',
+      description:
+        'Streams the file uploaded with a `marked-paid` Pay Now. Pay Now itself also accepts multipart: the JSON fields go in a `payload` field and the file in `file`.',
+      auth: 'bearer',
+      responses: {
+        200: {
+          description: 'The file',
+          content: { '*/*': { schema: { type: 'string', format: 'binary' } } },
+        },
+        404: { $ref: '#/components/responses/NotFound' },
       },
     }),
   },

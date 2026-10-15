@@ -89,6 +89,13 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     schema: { type: 'integer' },
     description: 'A document line on a legalisation order (`tbl_order_dl_checklist.id`).',
   },
+  proofId: {
+    name: 'proofId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description: 'A hand-recorded payment proof (`tbl_ops_payment_proof.id`).',
+  },
   orderId: {
     name: 'orderId',
     in: 'path',
@@ -115,7 +122,10 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     name: 'sheet',
     in: 'path',
     required: true,
-    schema: { type: 'string', enum: ['return-address', 'embassy-to-from', 'order-label'] },
+    schema: {
+      type: 'string',
+      enum: ['return-address', 'embassy-to-from', 'order-label'],
+    },
     description: 'Which printable sheet.',
   },
   checklistId: {
@@ -145,7 +155,10 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     name: 'visaSheet',
     in: 'path',
     required: true,
-    schema: { type: 'string', enum: ['return-address', 'embassy-to-from', 'traveller-label'] },
+    schema: {
+      type: 'string',
+      enum: ['return-address', 'embassy-to-from', 'traveller-label'],
+    },
     description: 'Which printable public-visa sheet.',
   },
   labelType: {
