@@ -1,11 +1,19 @@
 import path from 'node:path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { CLS_TIMEZONE } from '../shared/dates';
 
 // `quiet` keeps dotenv's banner out of test and CI output. Values already
 // present in the environment win, so a harness that sets them first is
 // unaffected by whatever a local `.env` happens to contain.
 dotenv.config({ quiet: true });
+
+// Every legacy date is a Sydney wall-clock string (see `shared/dates.ts`). Sequelize
+// turns a string written to a DATE column into a `Date` using the process zone and
+// formats it back in the connection zone, so the two must agree or a row written
+// here lands hours away from the rows the old application wrote. Pinned rather
+// than left to whatever the host is set to.
+process.env.TZ = CLS_TIMEZONE;
 
 /**
  * Every environment variable this service reads, validated once at boot.

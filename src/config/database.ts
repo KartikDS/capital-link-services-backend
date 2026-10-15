@@ -1,5 +1,6 @@
 import { Sequelize } from 'sequelize';
 import { env } from './env';
+import { CLS_TIMEZONE } from '../shared/dates';
 import { logger } from '../shared/logger';
 import { ReadOnlyError, serverError } from '../shared/errors';
 
@@ -28,8 +29,7 @@ import { ReadOnlyError, serverError } from '../shared/errors';
  */
 
 /** Statements that change structure. Refused always, in every environment. */
-const DDL_PATTERN =
-  /^\s*(?:CREATE|ALTER|DROP|TRUNCATE|RENAME|GRANT|REVOKE)\b/i;
+const DDL_PATTERN = /^\s*(?:CREATE|ALTER|DROP|TRUNCATE|RENAME|GRANT|REVOKE)\b/i;
 
 /** Statements that change data. Refused only while `DB_READ_ONLY` is on. */
 const WRITE_PATTERN = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|SET\s+@|LOCK|UNLOCK)\b/i;
@@ -69,7 +69,14 @@ export const sequelize = new Sequelize({
   // date in the portal shifting by ten hours. Combined with `dateStrings` above,
   // DATE and DATETIME arrive as the strings MySQL holds, and are interpreted in
   // exactly one place (`shared/dates.ts`) rather than by the driver's guesswork.
-  timezone: env.database.timezone,
+  // A named zone, not the fixed `+10:00` the env default used to give: Sydney is
+  // +11:00 from October to April, and the process zone is pinned to match in
+  // `config/env.ts`, so a string written is the string stored.
+  timezone: CLS_TIMEZONE,
+  // Sequelize's own switch (missing from its typings): do not `SET time_zone` on
+  // the connection. A named zone is not valid there unless the server has its
+  // zone tables loaded, and every date this API reads or writes is a string.
+  ...({ keepDefaultTimezone: true } as object),
 
   pool: env.database.pool,
 
