@@ -494,11 +494,22 @@ export interface SnapshotOptions {
   includeClosed?: boolean;
   /** When including closed orders, how many of the most recent. */
   closedLimit?: number;
+  /**
+   * Only orders a consultant has claimed in the Ops flow, that is, those with a
+   * `tbl_ops_order_state` row. Orders worked entirely in the old system never get
+   * one, so this keeps them out.
+   */
+  claimedOnly?: boolean;
   limit?: number;
 }
 
 const idsClause = (ids: number[] | undefined): string =>
   ids ? (ids.length ? 'AND o.id IN (:ids)' : 'AND 1 = 0') : '';
+
+const claimedClause = (claimedOnly: boolean | undefined): string =>
+  claimedOnly
+    ? 'AND o.id IN (SELECT s.order_id FROM tbl_ops_order_state s WHERE s.claimed_by IS NOT NULL)'
+    : '';
 
 /**
  * Document legalisation orders that have been placed, with their Ops state.
@@ -530,7 +541,7 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
                         MAX(date_order_on_route_and_closed) AS closed_a
                    FROM tbl_document_legalization_order_details GROUP BY order_id) d
              ON d.order_id = o.id
-     WHERE o.order_type = 9 AND o.date_submitted IS NOT NULL ${idsClause(opts.ids)}`;
+     WHERE o.order_type = 9 AND o.date_submitted IS NOT NULL ${idsClause(opts.ids)} ${claimedClause(opts.claimedOnly)}`;
 
   const raw = await sql<OrderRow>(`${base} ORDER BY o.id DESC LIMIT :cap`, {
     ids: opts.ids ?? [],

@@ -2086,7 +2086,13 @@ export const opsRoutes = (audit: Audit): Router => {
   router.get('/documents', async (req, res) => {
     const q = req.query as Record<string, string | undefined>;
     const state = q.state ?? '';
-    const orders = await loadOrders({ includeClosed: true, closedLimit: 60 });
+    // Only orders claimed in the Ops flow. Everything worked in the old system
+    // before it went live has no claim and stays out of the hub.
+    const orders = await loadOrders({
+      includeClosed: true,
+      closedLimit: 60,
+      claimedOnly: true,
+    });
 
     const all = orders.flatMap((order) =>
       order.docs.map((doc) => {

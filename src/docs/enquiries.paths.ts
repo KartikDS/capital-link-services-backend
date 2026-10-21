@@ -236,13 +236,13 @@ export const enquiryPaths = {
       tag,
       summary: 'Change an enquiry’s status',
       description:
-        '`status` is a `char(100)` with no enumeration, so any word fits. The values below are the ones this API uses; a status the old application wrote is preserved rather than normalised, because it means something to whoever set it.',
+        '`status` is a `char(100)` with no enumeration, so any word fits. The pipeline is New, Contacted, Quoted, Won, Lost. A status the old application wrote (in-progress, converted, closed) is kept until changed and read as Contacted, Won and Lost.',
       auth: 'bearer',
       body: {
         schema: body({
           status: {
             type: 'string',
-            enum: ['new', 'in-progress', 'answered', 'closed'],
+            enum: ['new', 'contacted', 'quoted', 'won', 'lost'],
             description: 'Any string is accepted. These are the ones this API sets.',
           },
         }),
@@ -282,6 +282,30 @@ export const enquiryPaths = {
           enquiry: { $ref: '#/components/schemas/Enquiry' },
         }),
         403: { $ref: '#/components/responses/Forbidden' },
+        503: { $ref: '#/components/responses/ReadOnly' },
+      },
+    }),
+  },
+
+  '/api/enquiries/admin/{id}/assign': {
+    patch: operation('/api/enquiries/admin/{id}/assign', {
+      tag,
+      summary: 'Assign an enquiry to a consultant',
+      description:
+        'Sets `tbl_inquiries.assigned_to` to a staff id, or clears it with `null`. Answers 409 until CLS’s DBA has applied the 2026-10-21 enquiry-assignment migration.',
+      auth: 'bearer',
+      body: {
+        schema: body({
+          assignedTo: { type: 'integer', nullable: true },
+        }),
+      },
+      responses: {
+        200: okObject('Assigned', {
+          enquiry: { $ref: '#/components/schemas/Enquiry' },
+        }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        403: { $ref: '#/components/responses/Forbidden' },
+        409: { description: 'The assignment column has not been added yet' },
         503: { $ref: '#/components/responses/ReadOnly' },
       },
     }),

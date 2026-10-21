@@ -1,7 +1,7 @@
 import { Op } from 'sequelize';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { Inquiries, TranslationServices } from '../../models';
+import { Inquiries, TranslationServices, UserAdmin } from '../../models';
 import { requireAdmin } from '../../middleware/authenticate';
 import { translationEnquiryFiles } from '../../middleware/upload';
 import { markInternal } from '../../middleware/requestContext';
@@ -13,11 +13,23 @@ import {
   translationDocumentPath,
 } from '../../domain/translationDocuments';
 import { discardDocument, storedPathOf } from '../../shared/storage/documents';
-import { forbidden, notFound } from '../../shared/errors';
+import { ApiError, badRequest, forbidden, notFound } from '../../shared/errors';
 import { created, message, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
-import { clean, cleanOr, truncate } from '../../shared/text';
+import { clean, cleanOr, fullName, truncate } from '../../shared/text';
+import { ENABLED } from '../../domain/codes';
+import {
+  ENQUIRY_STATUSES,
+  readEnquiryStatus,
+  storedValuesFor,
+  type EnquiryStatus,
+} from '../../domain/enquiryStatus';
+import {
+  enquiryIdsAssignedTo,
+  readAssignments,
+  writeAssignment,
+} from '../../domain/enquiryAssignment';
 import {
   emailField,
   idParam,
@@ -527,7 +539,37 @@ enquiryRoutes.post(
 // Admin queue
 // ---------------------------------------------------------------------------
 
-const toEnquiryView = (row: Inquiries) => ({
+/** Who each enquiry is assigned to, resolved once per response. */
+interface AssigneeContext {
+  /** False until the `assigned_to` migration is applied. */
+  available: boolean;
+  byEnquiry: ReadonlyMap<number, number>;
+  names: ReadonlyMap<number, string>;
+}
+
+const noAssignees: AssigneeContext = {
+  available: false,
+  byEnquiry: new Map(),
+  names: new Map(),
+};
+
+const loadAssignees = async (ids: readonly number[]): Promise<AssigneeContext> => {
+  const lookup = await readAssignments(ids);
+  const adminIds = [...new Set(lookup.byEnquiry.values())];
+  const admins = adminIds.length
+    ? await UserAdmin.findAll({ where: { id: adminIds } })
+    : [];
+
+  return {
+    available: lookup.available,
+    byEnquiry: lookup.byEnquiry,
+    names: new Map<number, string>(
+      admins.map((a) => [a.id, fullName(a.fname, a.lname) ?? ''])
+    ),
+  };
+};
+
+const toEnquiryView = (row: Inquiries, assignees: AssigneeContext = noAssignees) => ({
   id: String(row.id),
   reference: `ENQ-${row.id}`,
   name: cleanOr(row.name, ''),
@@ -536,7 +578,10 @@ const toEnquiryView = (row: Inquiries) => ({
   subject: cleanOr(row.subject, 'Enquiry'),
   message: cleanOr(row.query, ''),
   summary: truncate(clean(row.query), 160),
-  status: cleanOr(row.status, 'new'),
+  status: readEnquiryStatus(row.status),
+  assignedTo: assignees.byEnquiry.get(row.id) ?? null,
+  assignedToName: assignees.names.get(assignees.byEnquiry.get(row.id) ?? -1) ?? null,
+  assignmentAvailable: assignees.available,
   createdAt: toIso(row.created),
   updatedAt: toIso(row.updated),
 });
@@ -546,7 +591,11 @@ const adminRoutes = Router();
 adminRoutes.use(authenticate, requireAdmin);
 
 const listQuerySchema = z.object({
-  status: z.string().trim().max(100).optional(),
+  status: z.enum(ENQUIRY_STATUSES).optional(),
+  /** An admin id, or `unassigned`. */
+  assignedTo: z
+    .union([z.literal('unassigned'), z.coerce.number().int().positive()])
+    .optional(),
   subject: z.string().trim().max(255).optional(),
   search: z.string().trim().max(255).optional(),
   page: z.coerce.number().int().positive().optional(),
@@ -561,9 +610,31 @@ adminRoutes.get(
     const query = validQuery<z.infer<typeof listQuerySchema>>(req);
     const page = readPage(req);
 
+    // With the column missing nothing is assigned: "unassigned" matches
+    // everything and a named admin matches nothing.
+    let assignedIds: number[] | null = null;
+    if (typeof query.assignedTo === 'number') {
+      assignedIds = (await enquiryIdsAssignedTo(query.assignedTo)) ?? [];
+    } else if (query.assignedTo === 'unassigned') {
+      const everyId = (await Inquiries.findAll({ attributes: ['id'], raw: true })).map(
+        (r) => r.id
+      );
+      assignedIds = [...(await readAssignments(everyId)).byEnquiry.keys()];
+    }
+
+    const assignmentFilter =
+      assignedIds === null
+        ? {}
+        : query.assignedTo === 'unassigned'
+          ? assignedIds.length
+            ? { id: { [Op.notIn]: assignedIds } }
+            : {}
+          : { id: { [Op.in]: assignedIds } };
+
     const { rows, count } = await Inquiries.findAndCountAll({
       where: {
-        ...(query.status ? { status: query.status } : {}),
+        ...assignmentFilter,
+        ...(query.status ? { status: { [Op.in]: storedValuesFor(query.status) } } : {}),
         ...(query.subject ? { subject: query.subject } : {}),
         ...(query.search
           ? {
@@ -580,7 +651,14 @@ adminRoutes.get(
       offset: page.offset,
     });
 
-    paged(res, 'enquiries', rows.map(toEnquiryView), pageMeta(page, count));
+    const assignees = await loadAssignees(rows.map((row) => row.id));
+
+    paged(
+      res,
+      'enquiries',
+      rows.map((row) => toEnquiryView(row, assignees)),
+      pageMeta(page, count)
+    );
   }
 );
 
@@ -593,7 +671,7 @@ adminRoutes.get(
 
     if (!row) throw notFound('We could not find that enquiry.');
 
-    ok(res, { enquiry: toEnquiryView(row) });
+    ok(res, { enquiry: toEnquiryView(row, await loadAssignees([row.id])) });
   }
 );
 
@@ -601,20 +679,21 @@ adminRoutes.get(
  * PATCH /api/enquiries/admin/:id
  *
  * `status` is a `char(100)` with no enumeration, so any word fits. The values
- * below are the ones this API uses; a status the old application wrote is
- * preserved rather than normalised, because it means something to whoever set it.
+ * below are the pipeline this API uses (`domain/enquiryStatus`); a status the old
+ * application wrote is preserved until someone changes it, and read as the
+ * nearest stage meanwhile.
  */
 adminRoutes.patch(
   '/:id',
   validate(z.object({ id: idParam }), 'params'),
   validate(
     z.object({
-      status: z.enum(['new', 'in-progress', 'quoted', 'converted', 'closed']),
+      status: z.enum(ENQUIRY_STATUSES),
     })
   ),
   async (req: Request, res: Response) => {
     const { id } = validParams<{ id: number }>(req);
-    const { status } = req.body as { status: string };
+    const { status } = req.body as { status: EnquiryStatus };
 
     const row = await Inquiries.findByPk(id);
     if (!row) throw notFound('We could not find that enquiry.');
@@ -623,7 +702,47 @@ adminRoutes.patch(
 
     logger.info('Enquiry status changed', { enquiryId: id, status });
 
-    ok(res, { enquiry: toEnquiryView(row) });
+    ok(res, { enquiry: toEnquiryView(row, await loadAssignees([row.id])) });
+  }
+);
+
+/**
+ * PATCH /api/enquiries/admin/:id/assign — put a consultant on an enquiry, or
+ * take them off with `null`.
+ *
+ * Needs `tbl_inquiries.assigned_to` (see the 2026-10-21 migration). Until CLS's
+ * DBA applies it this answers 409 rather than pretending to have saved.
+ */
+adminRoutes.patch(
+  '/:id/assign',
+  validate(z.object({ id: idParam }), 'params'),
+  validate(z.object({ assignedTo: z.coerce.number().int().positive().nullable() })),
+  async (req: Request, res: Response) => {
+    const { id } = validParams<{ id: number }>(req);
+    const { assignedTo } = req.body as { assignedTo: number | null };
+
+    const row = await Inquiries.findByPk(id);
+    if (!row) throw notFound('We could not find that enquiry.');
+
+    if (assignedTo !== null) {
+      const admin = await UserAdmin.findOne({
+        where: { id: assignedTo, s_enabled: ENABLED },
+      });
+      if (!admin) throw badRequest('That person is not on the staff roster.');
+    }
+
+    if (!(await writeAssignment(id, assignedTo))) {
+      throw new ApiError(
+        409,
+        'assignment_unavailable',
+        'Assigning enquiries is not switched on yet: the database change for it is still waiting to be applied.'
+      );
+    }
+
+    await row.update({ updated: toLegacyDateTime() });
+    logger.info('Enquiry assigned', { enquiryId: id, assignedTo });
+
+    ok(res, { enquiry: toEnquiryView(row, await loadAssignees([row.id])) });
   }
 );
 

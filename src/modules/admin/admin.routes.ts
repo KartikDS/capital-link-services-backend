@@ -1176,7 +1176,7 @@ adminRoutes.post(
     });
 
     await order.update({ order_no: `CLS-${String(order.id).padStart(6, '0')}` });
-    await enquiry.update({ status: 'converted', updated: now });
+    await enquiry.update({ status: 'won', updated: now });
 
     await audit(req, 'enquiry.convert', {
       enquiryId: id,
