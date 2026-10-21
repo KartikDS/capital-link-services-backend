@@ -710,7 +710,16 @@ export interface LegalisationOrderInput {
 export const lodgeLegalisationOrder = async (
   input: LegalisationOrderInput
 ): Promise<LodgedOrder> => {
+  // Timed per stage, because "the order took too long to save" has more than one
+  // possible culprit and the log is the only place that says which.
+  const started = Date.now();
+  const stages: Record<string, number> = {};
+  const mark = (stage: string): void => {
+    stages[stage] = Date.now() - started;
+  };
+
   const quote = await quoteLegalisation(input.destinationCountryId ?? null);
+  mark('quoted');
 
   return sequelize
     .transaction(async (transaction) => {
@@ -864,13 +873,18 @@ export const lodgeLegalisationOrder = async (
       }
 
       await createReturnAddress(order.id, input.returnAddress, transaction);
+      mark('rows written');
 
       return finish(order, quote);
     })
     .then(async (lodged) => {
+      mark('committed');
       // After the commit: see `recordOrderNote` for why this cannot be inside it.
       await recordOrderNote(lodged.orderId, input.notes);
+      mark('note recorded');
       await recordReturnPreference(lodged.orderId, input.deliveryHandling);
+      mark('return preference recorded');
+      logger.info('Legalisation order lodged', { orderId: lodged.orderId, msFromStart: stages });
       return lodged;
     });
 };

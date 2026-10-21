@@ -66,8 +66,11 @@ const schema = z.object({
   DB_CHARSET: z.string().default('utf8mb4'),
   DB_TIMEZONE: z.string().default('+10:00'),
   DB_POOL_MAX: integer(10),
-  DB_POOL_MIN: integer(0),
-  DB_POOL_IDLE_MS: integer(10_000),
+  // Opening a connection costs several round trips, and the database is not on
+  // this host. Keep two warm and let the rest idle for five minutes, so a click
+  // after a short pause does not pay for a fresh handshake on every call.
+  DB_POOL_MIN: integer(2),
+  DB_POOL_IDLE_MS: integer(300_000),
   DB_POOL_ACQUIRE_MS: integer(30_000),
   DB_LOG_QUERIES: booleanish(false),
   DB_READ_ONLY: booleanish(false),

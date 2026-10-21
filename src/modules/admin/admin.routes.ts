@@ -58,6 +58,7 @@ import { saudiInvitationLetterAdminRoutes } from './saudiInvitationLetters';
 import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
 import { queueRoutes } from './queues';
+import { driverRoutes } from './driver';
 import { opsRoutes } from './ops/ops.routes';
 import { cached } from '../../shared/ttlCache';
 
@@ -1200,6 +1201,9 @@ adminRoutes.post(
  * above. It inherits `authenticate, requireAdmin` from this router.
  */
 adminRoutes.use('/queues', queueRoutes);
+
+/** The driver page: order lookup, receiver signature, group scan. Same `audit` hand-off. */
+adminRoutes.use('/driver', driverRoutes(audit));
 
 /** CLS Ops Phase 1: document routes, sign-off, the Document Hub and the action queue. */
 adminRoutes.use('/ops', opsRoutes(audit));

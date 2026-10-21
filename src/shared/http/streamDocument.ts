@@ -41,6 +41,13 @@ export const streamDocument = (
   res: Response,
   context: Record<string, unknown>
 ): void => {
+  // `?download=1` turns an inline view into a save, so staff can open a file in a
+  // tab and still have a link to keep a copy. Only ever inline -> attachment: a
+  // route that already forces a download (the portal's) is left as it is.
+  const disposition = res.getHeader('Content-Disposition');
+  if (res.req?.query?.download === '1' && typeof disposition === 'string') {
+    res.setHeader('Content-Disposition', disposition.replace(/^inline/, 'attachment'));
+  }
   res.setHeader('Content-Type', opened.contentType);
   if (opened.bytes !== null) res.setHeader('Content-Length', String(opened.bytes));
 

@@ -412,6 +412,14 @@ export const orderDocumentsUpload = (folderFor: (req: Request) => Promise<string
     limits: { fileSize: env.uploads.maxBytes, files: 10, fields: 30 },
   }).array('documents', 10);
 
+/** Several files staff attach to an order at once, on the field `files`. */
+export const orderFilesUpload = (folderFor: (req: Request) => Promise<string>) =>
+  multer({
+    storage: new DocumentStorage({ directory: oncePerRequest(folderFor) }),
+    fileFilter,
+    limits: { fileSize: env.uploads.maxBytes, files: 10, fields: 10 },
+  }).array('files', 10);
+
 /** One file staff attach to an order, on the field the admin screens post. */
 export const orderFileUpload = (folderFor: (req: Request) => Promise<string>) =>
   multer({

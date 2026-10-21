@@ -694,7 +694,7 @@ export const clearanceOrderRoutes = (audit: LegalisationAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `attachment; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, documentId });

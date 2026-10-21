@@ -62,6 +62,10 @@ export const sequelize = new Sequelize({
     typeCast: true,
     // A statement that has not answered in thirty seconds is not going to.
     connectTimeout: 30_000,
+    // What `mysql2` was already using. It accepts only `local`, `Z` or an offset,
+    // so the named zone below made it log "Ignoring invalid timezone" on every
+    // connection and fall back to UTC. Saying so here changes nothing but the log.
+    timezone: 'Z',
   },
 
   // The old application writes local Sydney times into DATETIME columns with no

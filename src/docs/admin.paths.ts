@@ -1418,6 +1418,21 @@ export const adminPaths = {
     }),
   },
 
+  '/api/admin/orders/{id}/checklist/{checklistId}/files': {
+    post: operation('/api/admin/orders/{id}/checklist/{checklistId}/files', {
+      tag,
+      summary: 'Add several documents to a Document Checklist entry',
+      description:
+        '`multipart/form-data` with up to 10 `files`. A checklist row holds one file, so each file becomes a sibling row copying the type, number and note of the row named by `{checklistId}`. That row must belong to the order named by `{id}`.',
+      auth: 'bearer',
+      responses: {
+        200: okObject('Added', { checklist: { type: 'array', items: { type: 'object' } } }),
+        400: { $ref: '#/components/responses/BadRequest' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    }),
+  },
+
   '/api/admin/orders/{id}/voucher/passport-file': {
     get: operation('/api/admin/orders/{id}/voucher/passport-file', {
       tag,

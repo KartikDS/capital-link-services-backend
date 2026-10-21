@@ -21,7 +21,7 @@ import {
   UserClient,
   VisaCourierOptions,
 } from '../../models';
-import { orderFileUpload } from '../../middleware/upload';
+import { orderFileUpload, orderFilesUpload } from '../../middleware/upload';
 import { orderFolder } from '../../shared/storage/documentFolders';
 import { ok } from '../../shared/http/responses';
 import { badRequest, notFound } from '../../shared/errors';
@@ -650,6 +650,7 @@ const orderUploadFolder = async (req: Request): Promise<string> => {
 };
 
 const adminChecklistFileUpload = orderFileUpload(orderUploadFolder);
+const adminChecklistFilesUpload = orderFilesUpload(orderUploadFolder);
 const adminVoucherPassportFileUpload = orderFileUpload(orderUploadFolder);
 const adminOrderDocumentUpload = orderFileUpload(orderUploadFolder);
 
@@ -680,6 +681,51 @@ orderDetailRoutes.patch(
     if (previous) void discardDocument(previous);
 
     ok(res, { checklist: checklistRowOf(row) });
+  }
+);
+
+/**
+ * POST /api/admin/orders/:id/checklist/:checklistId/files
+ *
+ * Several documents for one checklist entry. `tbl_order_dl_checklist.doc_file`
+ * holds one path, and the legacy admin, the portal and Ops all read it as one, so
+ * a second file cannot live on the same row. Each file instead becomes a sibling
+ * row — the same type, quantity and note as the row named in the URL — which is how
+ * the legacy checklist already shows two scans of one document type.
+ */
+orderDetailRoutes.post(
+  '/:id/checklist/:checklistId/files',
+  validate(z.object({ id: idParam, checklistId: idParam }), 'params'),
+  adminChecklistFilesUpload,
+  async (req: Request, res: Response) => {
+    const { id, checklistId } = validParams<{ id: number; checklistId: number }>(
+      req
+    );
+    const files = (req.files ?? []) as Express.Multer.File[];
+    if (files.length === 0) throw badRequest('Attach at least one file.');
+
+    const source = await OrderDlChecklist.findByPk(checklistId);
+
+    if (!source || source.order_no !== id) {
+      await Promise.all(files.map((file) => discardDocument(storedPathOf(file))));
+      throw notFound('We could not find that checklist row.');
+    }
+
+    const created = [];
+
+    for (const file of files) {
+      created.push(
+        await OrderDlChecklist.create({
+          order_no: id,
+          type: source.type,
+          number: source.number,
+          note: source.note,
+          doc_file: storedPathOf(file),
+        })
+      );
+    }
+
+    ok(res, { checklist: created.map(checklistRowOf) });
   }
 );
 

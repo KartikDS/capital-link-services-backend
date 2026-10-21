@@ -116,7 +116,7 @@ freeVisaDocumentAdminRoutes.get(
 
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${path.basename(filename)}"`
+      `inline; filename="${path.basename(filename)}"`
     );
     streamDocument(opened, res, { freeVisaDocumentId: id });
   }
