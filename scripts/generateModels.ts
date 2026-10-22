@@ -40,6 +40,7 @@ const SKIPPED = new Set([
   'tbl_user_client-issuetest',
   'tbl_migration_debug',
   'tbl_myob_keys_development',
+  'tbl_saudi_invitation_letters',
 ]);
 
 interface Column {

@@ -32,3 +32,12 @@ export const UNMODELLED_TABLES = [
   'tbl_migration_debug',
   'tbl_myob_keys_development',
 ] as const;
+
+/**
+ * Tables still in the database that the application no longer uses.
+ *
+ * Kept apart from `UNMODELLED_TABLES` because those are backups and scratch
+ * copies whose names say so; these are real tables whose feature was retired.
+ * They are left in place — the app issues no DDL — and simply get no model.
+ */
+export const RETIRED_TABLES = ['tbl_saudi_invitation_letters'] as const;

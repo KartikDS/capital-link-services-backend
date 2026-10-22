@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Model, ModelStatic } from 'sequelize';
-import { UNMODELLED_TABLES, generatedModels } from '../../src/models';
+import {
+  RETIRED_TABLES,
+  UNMODELLED_TABLES,
+  generatedModels,
+} from '../../src/models';
 
 /**
  * Proves the model layer matches the schema dump, column for column.
@@ -99,7 +103,9 @@ describe('every model matches a real table', () => {
   const models = Object.entries(generatedModels) as [string, ModelStatic<Model>][];
 
   it('models every table except the ones deliberately skipped', () => {
-    expect(models.length).toBe(dump.size - UNMODELLED_TABLES.length);
+    expect(models.length).toBe(
+      dump.size - UNMODELLED_TABLES.length - RETIRED_TABLES.length
+    );
   });
 
   it.each(models)('%s points at a table that exists', (_name, model) => {
@@ -142,7 +148,7 @@ describe('every model matches a real table', () => {
 describe('the skipped tables', () => {
   it('names only tables that are really in the dump', () => {
     // A stale entry here would silently exempt nothing.
-    for (const table of UNMODELLED_TABLES) {
+    for (const table of [...UNMODELLED_TABLES, ...RETIRED_TABLES]) {
       expect(dump.has(table)).toBe(true);
     }
   });

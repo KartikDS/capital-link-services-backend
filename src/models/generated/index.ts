@@ -66,7 +66,6 @@ import { PublicVisaTypes } from './PublicVisaTypes';
 import { PublicVisaTypeLocations } from './PublicVisaTypeLocations';
 import { RussianVisaVoucherOrderDetails } from './RussianVisaVoucherOrderDetails';
 import { RussianVisaVoucherTypes } from './RussianVisaVoucherTypes';
-import { SaudiInvitationLetters } from './SaudiInvitationLetters';
 import { ScanGroup } from './ScanGroup';
 import { Sections } from './Sections';
 import { Services } from './Services';
@@ -156,7 +155,6 @@ export { PublicVisaTypes, type PublicVisaTypesAttributes } from './PublicVisaTyp
 export { PublicVisaTypeLocations, type PublicVisaTypeLocationsAttributes } from './PublicVisaTypeLocations';
 export { RussianVisaVoucherOrderDetails, type RussianVisaVoucherOrderDetailsAttributes } from './RussianVisaVoucherOrderDetails';
 export { RussianVisaVoucherTypes, type RussianVisaVoucherTypesAttributes } from './RussianVisaVoucherTypes';
-export { SaudiInvitationLetters, type SaudiInvitationLettersAttributes } from './SaudiInvitationLetters';
 export { ScanGroup, type ScanGroupAttributes } from './ScanGroup';
 export { Sections, type SectionsAttributes } from './Sections';
 export { Services, type ServicesAttributes } from './Services';
@@ -248,7 +246,6 @@ export const generatedModels = {
   PublicVisaTypeLocations,
   RussianVisaVoucherOrderDetails,
   RussianVisaVoucherTypes,
-  SaudiInvitationLetters,
   ScanGroup,
   Sections,
   Services,

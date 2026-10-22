@@ -183,7 +183,6 @@ export const applyAssociations = (): void => {
       [M.OrderDocDeliveryDetails, 'docDeliveryDetails'],
       [M.OrderReturnDocumentDetails, 'returnDocumentDetails'],
       [M.OrderFollowUpDate, 'followUps'],
-      [M.SaudiInvitationLetters, 'saudiInvitations'],
     ],
     { foreignKey: 'order_id', sourceKey: 'id', parentAs: 'order' }
   );
@@ -543,24 +542,6 @@ export const applyAssociations = (): void => {
     foreignKey: 'destination',
     targetKey: 'id',
     as: 'destinationCountry',
-    ...LOOSE,
-  });
-
-  // -------------------------------------------------------------------------
-  // Saudi invitation letters
-  // -------------------------------------------------------------------------
-
-  M.SaudiInvitationLetters.belongsTo(M.Countries, {
-    foreignKey: 'destination',
-    targetKey: 'id',
-    as: 'destinationCountry',
-    ...LOOSE,
-  });
-
-  M.SaudiInvitationLetters.belongsTo(M.Countries, {
-    foreignKey: 'nationality',
-    targetKey: 'id',
-    as: 'nationalityCountry',
     ...LOOSE,
   });
 

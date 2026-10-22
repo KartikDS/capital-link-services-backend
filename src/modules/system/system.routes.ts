@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { QueryTypes } from 'sequelize';
 import { env } from '../../config/env';
 import { isDatabaseConnected, sequelize } from '../../config/database';
-import { UNMODELLED_TABLES, generatedModels } from '../../models';
+import { RETIRED_TABLES, UNMODELLED_TABLES, generatedModels } from '../../models';
 import { ALLOWED_EXTENSIONS } from '../../middleware/upload';
 import { ok } from '../../shared/http/responses';
 import {
@@ -115,7 +115,7 @@ systemRoutes.get('/system/schema', async (_req: Request, res: Response) => {
   const modelled = new Set(
     Object.values(generatedModels).map((model) => model.getTableName() as string)
   );
-  const skipped = new Set<string>(UNMODELLED_TABLES);
+  const skipped = new Set<string>([...UNMODELLED_TABLES, ...RETIRED_TABLES]);
 
   // A table this API queries that the database does not have. Every one of
   // these is a broken endpoint waiting to be called.
