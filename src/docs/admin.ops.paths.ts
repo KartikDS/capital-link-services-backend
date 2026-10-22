@@ -272,12 +272,6 @@ export const adminOpsPaths = merge([
     }
   ),
   entry(
-    `${P}/pending/{id}/remind`,
-    'post',
-    'Record a reminder',
-    'Increments the reminder count and restarts the chase clock.'
-  ),
-  entry(
     `${P}/pending/{id}/resolve`,
     'post',
     'Resolve a pending item',
@@ -343,6 +337,15 @@ export const adminOpsPaths = merge([
     'Appends a stop to the route.',
     {
       body: body({ departmentId: f.int(), price: f.int() }, ['departmentId', 'price']),
+    }
+  ),
+  entry(
+    `${P}/orders/{id}/docs/{docId}/legs/order`,
+    'put',
+    'Reorder a document’s unsent legs',
+    'legIds must list every leg of the document that has not been sent, once each, in the order wanted. Legs already sent or received keep their place and the unsent ones follow them. Each leg keeps its price and responsible person.',
+    {
+      body: body({ legIds: { type: 'array', items: { type: 'integer' } } }, ['legIds']),
     }
   ),
   entry(

@@ -377,7 +377,7 @@ export interface NextAction {
     | 'claim'
     | 'verify'
     | 'resolve'
-    | 'remind'
+    | 'waiting'
     | 'route'
     | 'send'
     | 'receive'
@@ -915,8 +915,8 @@ export const nextActionOf = (
       if (open.owner === 'client') {
         return {
           text: `Waiting on client: ${open.text}`,
-          act: 'remind',
-          button: 'Remind',
+          act: 'waiting',
+          button: 'View item',
           waiting: true,
           itemId: open.id,
         };
@@ -924,8 +924,8 @@ export const nextActionOf = (
       if (open.owner === 'third' || open.owner === 'dept') {
         return {
           text: `Waiting on ${open.who ?? (open.owner === 'dept' ? 'the department' : 'a third party')}: ${open.text}`,
-          act: 'remind',
-          button: 'Follow up',
+          act: 'waiting',
+          button: 'View item',
           waiting: true,
           itemId: open.id,
         };

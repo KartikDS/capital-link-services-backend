@@ -812,7 +812,11 @@ export const opsRoutes = (audit: Audit): Router => {
         id: a.id,
         kind: a.kind,
         text: a.text,
-        by: a.admin_id ? (staff.names.get(a.admin_id) ?? null) : 'System',
+        by: a.admin_id
+          ? (staff.names.get(a.admin_id) ?? null)
+          : a.kind === 'client'
+            ? 'Client'
+            : 'System',
         at: toIso(a.created_at),
       })),
       events: events.map((e) => ({
@@ -1118,29 +1122,6 @@ export const opsRoutes = (audit: Audit): Router => {
     if (!item) throw notFound('We could not find that item.');
     return item;
   };
-
-  router.post(
-    '/pending/:id/remind',
-    validate(z.object({ id: idParam }), 'params'),
-    async (req, res) => {
-      const { id } = validParams<{ id: number }>(req);
-      const me = currentUserId(req);
-      const item = await itemOf(id);
-      if (item.resolved_at) throw conflict('That item is already resolved.');
-      const sla = await readSla();
-      await exec(
-        `UPDATE tbl_ops_pending_item SET reminders = reminders + 1, last_reminded_at = :at, due_at = :due WHERE id = :id`,
-        {
-          id,
-          at: stamp(),
-          due: toLegacyDateTime(new Date(Date.now() + sla.chaseH * 3_600_000)),
-        }
-      );
-      await activity(item.order_id, 'mail', `Reminder recorded: ${item.text}`, me);
-      await audit(req, 'ops.pending.remind', { itemId: id });
-      done(res, await orderPayload(item.order_id, me));
-    }
-  );
 
   router.post(
     '/pending/:id/resolve',
@@ -1508,6 +1489,63 @@ export const opsRoutes = (audit: Audit): Router => {
         detail: { department: dept.short_name },
       });
       await activity(id, 'route', `${dept.short_name} leg added to ${doc.type}`, me);
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  /**
+   * PUT /orders/:id/docs/:docId/legs/order — put a document's unsent legs in a new
+   * order.
+   *
+   * `legIds` must be exactly the document's legs that are still `todo`, in the
+   * order wanted. A leg that has been sent or received never moves: it has already
+   * happened in that position, and the unsent ones always follow it. The ids keep
+   * their rows, so each leg's price and responsible person survive the move.
+   */
+  router.put(
+    '/orders/:id/docs/:docId/legs/order',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    validate(z.object({ legIds: z.array(bodyId).min(2).max(50) })),
+    async (req, res) => {
+      const { id, docId } = validParams<{ id: number; docId: number }>(req);
+      const me = currentUserId(req);
+      const { legIds } = req.body as { legIds: number[] };
+      const order = await need(id);
+      notClosed(order);
+      needClaimed(order);
+      const doc = docOf(order, docId);
+
+      const unsent = doc.legs.filter((l) => l.status === 'todo');
+      const wanted = new Set(legIds);
+      if (
+        wanted.size !== legIds.length ||
+        unsent.length !== legIds.length ||
+        !unsent.every((l) => wanted.has(l.id))
+      ) {
+        throw conflict(
+          'Only legs that have not been sent can be reordered, and every one of them must be listed once.'
+        );
+      }
+
+      const settled = doc.legs
+        .filter((l) => l.status !== 'todo')
+        .reduce((m, l) => Math.max(m, l.seq), 0);
+      const byId = new Map(unsent.map((l) => [l.id, l]));
+
+      await sequelize.transaction(async (t) => {
+        for (const [index, legId] of legIds.entries()) {
+          await exec(
+            `UPDATE tbl_ops_doc_leg SET seq = :seq, updated_at = :at WHERE id = :id AND status = 'todo'`,
+            { id: legId, seq: settled + index + 1, at: stamp() },
+            t
+          );
+        }
+      });
+
+      const route = legIds.map((legId) => byId.get(legId)?.department).join(' → ');
+      await event(id, docId, null, 'reordered', me, { detail: { route } });
+      await activity(id, 'route', `${doc.type} route reordered: ${route}`, me);
+      await audit(req, 'ops.route.reorder', { orderId: id, docId, route });
       done(res, await orderPayload(id, me));
     }
   );
@@ -2402,7 +2440,11 @@ export const opsRoutes = (audit: Audit): Router => {
         orderId: a.order_id,
         kind: a.kind,
         text: a.text,
-        by: a.admin_id ? (staff.names.get(a.admin_id) ?? null) : 'System',
+        by: a.admin_id
+          ? (staff.names.get(a.admin_id) ?? null)
+          : a.kind === 'client'
+            ? 'Client'
+            : 'System',
         at: toIso(a.created_at),
       })),
     });
