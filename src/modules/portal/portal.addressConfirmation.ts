@@ -1,6 +1,7 @@
 import { Op } from 'sequelize';
 import { ClsOrder } from '../../models';
 import { badRequest } from '../../shared/errors';
+import { logClientActivity } from '../../domain/orderActivity';
 import { logger } from '../../shared/logger';
 import * as orders from '../orders/orders.service';
 
@@ -117,6 +118,10 @@ export const confirmAddress = async (
       orderId: resolved.row.id,
       clientId,
     });
+    await logClientActivity(
+      resolved.row.id,
+      'The client confirmed the return address'
+    );
   }
 
   return {

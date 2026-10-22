@@ -8,6 +8,7 @@ import {
   UserClient,
 } from '../../models';
 import { scopeOfOrder } from '../../domain/checklist';
+import { logClientActivity, snippet } from '../../domain/orderActivity';
 import { badRequest, conflict } from '../../shared/errors';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { storedPathOf } from '../../shared/storage/documents';
@@ -70,6 +71,13 @@ export interface AttachedDocument {
  * Only the newer order family can take attachments: the document table keys on
  * `order_id`, which `tbl_orders` does not have.
  */
+/** Who to name in the order's feed: the contact on the order, else "The client". */
+const feedName = (resolved: ResolvedOrder): string =>
+  resolved.family === 'cls'
+    ? (fullName(resolved.row.contact_first_name, resolved.row.contact_last_name) ??
+      'The client')
+    : 'The client';
+
 export const attachDocuments = async (
   resolved: ResolvedOrder,
   files: readonly Express.Multer.File[]
@@ -226,6 +234,14 @@ export const attachDocuments = async (
     filledDeclaredLines: claimed.size,
   });
 
+  if (attached.length > 0) {
+    const names = attached.map((doc) => doc.name).join(', ');
+    await logClientActivity(
+      orderId,
+      `${feedName(resolved)} uploaded ${attached.length === 1 ? '1 document' : `${attached.length} documents`}: ${names}`
+    );
+  }
+
   return attached;
 };
 
@@ -335,6 +351,11 @@ export const cancelOrder = async (
   }
 
   logger.info('Cancellation requested', { reference, requestedBy, recorded: Number.isSafeInteger(numeric) });
+
+  await logClientActivity(
+    resolved.row.id,
+    `${feedName(resolved)} asked to cancel the order${reason ? `: ${snippet(reason)}` : ''}`
+  );
 
   return {
     reference,
@@ -479,6 +500,13 @@ export const addClientComment = async (
       clientId: authorId,
     });
 
+    if (resolved.family === 'cls') {
+      await logClientActivity(
+        resolved.row.id,
+        `${authorName} sent a message: ${snippet(note)}`
+      );
+    }
+
     return { comment: toDestinationCommentView(row, reference) };
   }
 
@@ -521,6 +549,13 @@ export const addClientComment = async (
     noteId: row.id,
     clientId: authorId,
   });
+
+  if (resolved.family === 'cls') {
+    await logClientActivity(
+      resolved.row.id,
+      `${authorName} sent a message: ${snippet(note)}`
+    );
+  }
 
   return { comment: toCommentView(row, reference) };
 };
