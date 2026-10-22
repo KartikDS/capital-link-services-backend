@@ -21,6 +21,7 @@ import { toCents } from '../../shared/money';
 import { clean, cleanOr, stripHtml, toBoolean, truncate } from '../../shared/text';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
 import { logger } from '../../shared/logger';
+import { visibleSettings } from '../../domain/generalSettings';
 import { findPolicyRow, isPolicySlug, policyTitle } from './policyPages';
 
 /**
@@ -328,7 +329,9 @@ contentRoutes.get('/visa-popup', async (_req: Request, res: Response) => {
  * coerced here rather than leaving every caller to guess.
  */
 contentRoutes.get('/settings', async (_req: Request, res: Response) => {
-  const rows = await GeneralSettings.findAll({ where: { status: 1 } });
+  const rows = await GeneralSettings.findAll({
+    where: { status: 1, ...visibleSettings },
+  });
 
   const settings: Record<string, string | number | boolean | null> = {};
 

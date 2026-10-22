@@ -2,6 +2,7 @@ import { Op } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { GeneralSettings } from '../../models';
+import { visibleSettings } from '../../domain/generalSettings';
 import { notFound } from '../../shared/errors';
 import { created, noContent, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
@@ -79,14 +80,17 @@ generalSettingsAdminRoutes.get(
     const page = readPage(req);
 
     const { rows, count } = await GeneralSettings.findAndCountAll({
-      where: search
-        ? {
-            [Op.or]: [
-              { title: { [Op.like]: `%${search}%` } },
-              { slug: { [Op.like]: `%${search}%` } },
-            ],
-          }
-        : {},
+      where: {
+        ...visibleSettings,
+        ...(search
+          ? {
+              [Op.or]: [
+                { title: { [Op.like]: `%${search}%` } },
+                { slug: { [Op.like]: `%${search}%` } },
+              ],
+            }
+          : {}),
+      },
       order: [['id', 'DESC']],
       limit: page.limit,
       offset: page.offset,
@@ -102,7 +106,9 @@ generalSettingsAdminRoutes.get(
   validate(idParams, 'params'),
   async (req: Request, res: Response) => {
     const { id } = validParams<{ id: number }>(req);
-    const row = await GeneralSettings.findByPk(id);
+    const row = await GeneralSettings.findOne({
+      where: { [Op.and]: [{ id }, visibleSettings] },
+    });
     if (!row) throw notFound('We could not find that setting.');
     ok(res, { setting: toSettingRow(row) });
   }
@@ -138,7 +144,9 @@ generalSettingsAdminRoutes.patch(
     const { id } = validParams<{ id: number }>(req);
     const body = req.body as Partial<z.infer<typeof settingBody>>;
 
-    const row = await GeneralSettings.findByPk(id);
+    const row = await GeneralSettings.findOne({
+      where: { [Op.and]: [{ id }, visibleSettings] },
+    });
     if (!row) throw notFound('We could not find that setting.');
 
     const fieldType = body.fieldType ?? clean(row.field_type) ?? '1';
@@ -166,7 +174,9 @@ generalSettingsAdminRoutes.delete(
   validate(idParams, 'params'),
   async (req: Request, res: Response) => {
     const { id } = validParams<{ id: number }>(req);
-    const row = await GeneralSettings.findByPk(id);
+    const row = await GeneralSettings.findOne({
+      where: { [Op.and]: [{ id }, visibleSettings] },
+    });
     if (!row) throw notFound('We could not find that setting.');
     await row.destroy();
     noContent(res);
