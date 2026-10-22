@@ -23,12 +23,11 @@ import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { centsToNumber, toCents } from '../../shared/money';
 import { clean, cleanOr, fullName, truncate } from '../../shared/text';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
-import { logger } from '../../shared/logger';
+import { audit } from '../../domain/audit';
 import {
   CLS_ORDER_STATUS,
   DOCUMENT_STATUS,
   ENABLED,
-  LOG_AREA,
   PAYMENT_STATUS,
 } from '../../domain/codes';
 import { orderIdFromReference } from '../../domain/orderReference';
@@ -54,7 +53,6 @@ import { settingsAdminRoutes } from './settings';
 import { passportPhotoRoutes } from './passportPhotos';
 import { translationServiceRoutes } from './translationServices';
 import { generalSettingsAdminRoutes } from './generalSettings';
-import { saudiInvitationLetterAdminRoutes } from './saudiInvitationLetters';
 import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
 import { queueRoutes } from './queues';
@@ -82,34 +80,6 @@ import { cached } from '../../shared/ttlCache';
 export const adminRoutes = Router();
 
 adminRoutes.use(authenticate, requireAdmin);
-
-/**
- * Writes an audit entry.
- *
- * Failures are swallowed and logged. An audit write that fails must not fail the
- * action it was recording — but it must be noticeable, which is what the
- * `logger.error` is for.
- */
-const audit = async (
-  req: Request,
-  action: string,
-  detail: Record<string, unknown>
-): Promise<void> => {
-  try {
-    await Logs.create({
-      area: LOG_AREA.ADMIN,
-      user_id: req.auth?.sub ?? null,
-      user_type: 'admin',
-      log_datetime: toLegacyDateTime(),
-      log_details: JSON.stringify({ action, ...detail }).slice(0, 60_000),
-    });
-  } catch (error) {
-    logger.error('Audit write failed', {
-      action,
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -921,7 +891,7 @@ adminRoutes.get(
   '/logs',
   validate(
     z.object({
-      area: z.enum(['admin', 'dfat', 'client']).optional(),
+      area: z.enum(['admin', 'dfat', 'client', 'embassy']).optional(),
       userId: z.coerce.number().int().positive().optional(),
       // Matches inside `log_details` — the JSON blob `audit()` writes, which
       // carries the action name and whatever reference the action recorded.
@@ -1256,9 +1226,6 @@ adminRoutes.use('/translation-services', translationServiceRoutes);
 
 /** The legacy "General Settings" screen — a key/value CRUD list, see `generalSettings.ts`. */
 adminRoutes.use('/general-settings', generalSettingsAdminRoutes);
-
-/** The legacy "Saudi Invitation Letters" screen — see `saudiInvitationLetters.ts`. */
-adminRoutes.use('/saudi-invitation-letters', saudiInvitationLetterAdminRoutes);
 
 /** The legacy "Free Visa Document" screen — read-only, see `freeVisaDocument.ts`. */
 adminRoutes.use('/free-visa-documents', freeVisaDocumentAdminRoutes);

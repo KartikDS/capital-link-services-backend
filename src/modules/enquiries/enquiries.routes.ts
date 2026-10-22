@@ -39,6 +39,7 @@ import {
   validQuery,
 } from '../../shared/validation';
 import { logger } from '../../shared/logger';
+import { audit } from '../../domain/audit';
 
 /**
  * The public intake forms, and the admin side of the queue they land in.
@@ -701,6 +702,7 @@ adminRoutes.patch(
     await row.update({ status, updated: toLegacyDateTime() });
 
     logger.info('Enquiry status changed', { enquiryId: id, status });
+    await audit(req, 'enquiry.status', { enquiryId: id, status });
 
     ok(res, { enquiry: toEnquiryView(row, await loadAssignees([row.id])) });
   }
@@ -741,6 +743,7 @@ adminRoutes.patch(
 
     await row.update({ updated: toLegacyDateTime() });
     logger.info('Enquiry assigned', { enquiryId: id, assignedTo });
+    await audit(req, 'enquiry.assign', { enquiryId: id, assignedTo });
 
     ok(res, { enquiry: toEnquiryView(row, await loadAssignees([row.id])) });
   }
@@ -771,6 +774,8 @@ adminRoutes.post(
       updated: toLegacyDateTime(),
     });
 
+    await audit(req, 'enquiry.note', { enquiryId: id });
+
     ok(res, {
       enquiry: toEnquiryView(row),
       note: 'Notes are appended to the enquiry text — this table has no separate notes column.',
@@ -789,6 +794,7 @@ adminRoutes.delete(
 
     await row.destroy();
     logger.info('Enquiry deleted', { enquiryId: id });
+    await audit(req, 'enquiry.delete', { enquiryId: id });
 
     message(res, 'That enquiry has been deleted.');
   }
