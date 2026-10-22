@@ -329,6 +329,8 @@ queueRoutes.get(
         offset: page.offset,
       });
 
+      const { teamNameOf } = await loadQueueExtras(rows);
+
       return paged(
         res,
         'rows',
@@ -336,8 +338,10 @@ queueRoutes.get(
           const traveller = firstTraveller(row);
           return {
             id: row.id,
+            dateSubmitted: toIso(row.date_submitted),
             firstName: clean(traveller?.first_name),
             lastName: clean(traveller?.last_name),
+            assignedTo: teamNameOf(row),
             clearanceType: clean(
               (row as unknown as { clearanceType?: { name: string | null } })
                 .clearanceType?.name
