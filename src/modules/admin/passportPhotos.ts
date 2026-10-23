@@ -11,6 +11,7 @@ import { openDocument } from '../../shared/storage/documents';
 import { toIso } from '../../shared/dates';
 import { clean, fullName } from '../../shared/text';
 import { idParam, validate, validParams } from '../../shared/validation';
+import { cached } from '../../shared/ttlCache';
 
 /**
  * The legacy "Passport Photos" screen — every client account that has ever
@@ -50,12 +51,21 @@ passportPhotoRoutes.get(
   async (req: Request, res: Response) => {
     const page = readPage(req);
 
-    const { rows, count } = await UserClient.findAndCountAll({
-      where: { passport_photo: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] } },
-      order: [['passport_updated_at', 'DESC']],
-      limit: page.limit,
-      offset: page.offset,
-    });
+    const where = {
+      passport_photo: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] },
+    };
+
+    // The total is reused for a minute: it is a count of a large client table, and
+    // the rail badge and pager do not need it to the second.
+    const [count, rows] = await Promise.all([
+      cached('passport-count', 60_000, () => UserClient.count({ where })),
+      UserClient.findAll({
+        where,
+        order: [['passport_updated_at', 'DESC']],
+        limit: page.limit,
+        offset: page.offset,
+      }),
+    ]);
 
     paged(
       res,

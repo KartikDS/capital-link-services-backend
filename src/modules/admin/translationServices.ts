@@ -15,6 +15,8 @@ import {
   splitTranslationDocumentNames,
   translationDocumentPath,
 } from '../../domain/translationDocuments';
+import { cached } from '../../shared/ttlCache';
+import { countKey } from './queues';
 
 /**
  * The legacy "Translation Services" screen — reproduces
@@ -58,21 +60,28 @@ translationServiceRoutes.get(
     const { search } = validQuery<{ search?: string }>(req);
     const page = readPage(req);
 
-    const { rows, count } = await TranslationServices.findAndCountAll({
-      where: search
-        ? {
-            [Op.or]: [
-              { full_name: { [Op.like]: `%${search}%` } },
-              { email: { [Op.like]: `%${search}%` } },
-              { language_from: { [Op.like]: `%${search}%` } },
-              { language_to: { [Op.like]: `%${search}%` } },
-            ],
-          }
-        : {},
-      order: [['created', 'DESC']],
-      limit: page.limit,
-      offset: page.offset,
-    });
+    const where = search
+      ? {
+          [Op.or]: [
+            { full_name: { [Op.like]: `%${search}%` } },
+            { email: { [Op.like]: `%${search}%` } },
+            { language_from: { [Op.like]: `%${search}%` } },
+            { language_to: { [Op.like]: `%${search}%` } },
+          ],
+        }
+      : {};
+
+    const [count, rows] = await Promise.all([
+      cached(`translation-count:${countKey(where)}`, 60_000, () =>
+        TranslationServices.count({ where })
+      ),
+      TranslationServices.findAll({
+        where,
+        order: [['created', 'DESC']],
+        limit: page.limit,
+        offset: page.offset,
+      }),
+    ]);
 
     paged(
       res,
