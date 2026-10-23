@@ -55,10 +55,11 @@ import { translationServiceRoutes } from './translationServices';
 import { generalSettingsAdminRoutes } from './generalSettings';
 import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
-import { queueRoutes } from './queues';
+import { countKey, queueRoutes } from './queues';
 import { driverRoutes } from './driver';
 import { opsRoutes } from './ops/ops.routes';
-import { cached } from '../../shared/ttlCache';
+import { cached, invalidateCache } from '../../shared/ttlCache';
+import { SNAPSHOT_CACHE_PREFIX } from './ops/snapshot';
 
 /**
  * The back office. Staff tokens only.
@@ -80,6 +81,20 @@ import { cached } from '../../shared/ttlCache';
 export const adminRoutes = Router();
 
 adminRoutes.use(authenticate, requireAdmin);
+
+// Any admin write can change what the order lists and their counts show, so once
+// it has finished the short-lived read of the open orders is dropped. Staff then
+// see their own change on the very next screen instead of after the cache lapses.
+adminRoutes.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.on('finish', () => {
+      invalidateCache(SNAPSHOT_CACHE_PREFIX);
+      invalidateCache('orders-count:');
+      invalidateCache('queue-count:');
+    });
+  }
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // Dashboard
@@ -171,8 +186,7 @@ adminRoutes.get(
     const page = readPage(req);
     const searchedId = query.search ? orderIdFromReference(query.search) : null;
 
-    const { rows, count } = await ClsOrder.findAndCountAll({
-      where: {
+    const where = {
         date_submitted: { [Op.ne]: null },
         ...(query.status !== undefined ? { status: query.status } : {}),
         ...(query.orderType ? { order_type: query.orderType } : {}),
@@ -194,13 +208,24 @@ adminRoutes.get(
               ],
             }
           : {}),
-      },
-      include: [{ model: Countries, as: 'destinationCountry', required: false }],
-      order: [['date_submitted', 'DESC']],
-      limit: page.limit,
-      offset: page.offset,
-      distinct: true,
-    });
+      };
+
+    // The total is counted on the orders table alone (the country join cannot
+    // change it) and reused for thirty seconds, so the page of rows and the total
+    // are read side by side instead of one waiting for a join-wide DISTINCT count.
+    // Every admin write drops the cached totals (see the middleware above).
+    const [count, rows] = await Promise.all([
+      cached(`orders-count:${countKey(where)}`, 30_000, () =>
+        ClsOrder.count({ where })
+      ),
+      ClsOrder.findAll({
+        where,
+        include: [{ model: Countries, as: 'destinationCountry', required: false }],
+        order: [['date_submitted', 'DESC']],
+        limit: page.limit,
+        offset: page.offset,
+      }),
+    ]);
 
     paged(
       res,

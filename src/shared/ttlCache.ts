@@ -49,5 +49,17 @@ export const cached = <T>(
   return value;
 };
 
+/**
+ * Drops every entry whose key starts with `prefix`.
+ *
+ * For a cache that has to be fresh straight after a write: the entries go, and the
+ * next read repopulates them.
+ */
+export const invalidateCache = (prefix: string): void => {
+  for (const key of entries.keys()) {
+    if (key.startsWith(prefix)) entries.delete(key);
+  }
+};
+
 /** For tests. */
 export const clearTtlCache = (): void => entries.clear();

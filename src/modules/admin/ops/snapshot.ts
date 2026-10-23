@@ -1,6 +1,7 @@
 import { QueryTypes, type Transaction } from 'sequelize';
 import { sequelize } from '../../../config/database';
 import { toIso } from '../../../shared/dates';
+import { cached } from '../../../shared/ttlCache';
 import { clean } from '../../../shared/text';
 import {
   DEFAULT_SLA,
@@ -517,7 +518,7 @@ const claimedClause = (claimedOnly: boolean | undefined): string =>
  * "Placed" means `date_submitted` is set — the same line the legacy dashboard
  * draws between an order in the client's hands and one CLS has to work.
  */
-export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> => {
+const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> => {
   const [sla, staff, checkDefs] = await Promise.all([
     readSla(),
     loadStaff(),
@@ -525,33 +526,44 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
   ]);
   const checkKeys = checkDefs.filter((c) => c.active).map((c) => c.code);
 
+  /**
+   * The order rows alone: `tbl_cls_order` and the country, both indexed.
+   *
+   * The document type, the closed date and the company used to ride on this query
+   * as per-row subqueries and a grouped derived table over the child tables. Those
+   * tables have no index on `order_id`, so every order cost a scan of each one,
+   * and this one statement took ~14 seconds of a ~17 second read. The same three
+   * values are now read below, once each for the whole page, beside the other child
+   * tables.
+   */
   const base = `
     SELECT o.id, o.contact_first_name AS fn, o.contact_last_name AS ln, o.contact_email AS email,
            o.visa_cls_team_member AS assignee, o.date_submitted AS submitted,
            o.payment_status AS pay, o.is_address_confirmed AS addr_ok,
-           c.country_name AS dest, c.country_code AS dest_code,
-           d.type_of_document AS dtype, d.closed_a AS closed_a,
-           (SELECT x.visa_date_order_on_route_and_closed FROM tbl_cls_order_destinations x
-             WHERE x.order_id = o.id ORDER BY x.id LIMIT 1) AS closed_b,
-           (SELECT r.company FROM tbl_order_return_document_details r
-             WHERE r.order_id = o.id ORDER BY r.id LIMIT 1) AS company
+           c.country_name AS dest, c.country_code AS dest_code
       FROM tbl_cls_order o
       LEFT JOIN tbl_countries c ON c.id = o.destination
-      LEFT JOIN (SELECT order_id, MAX(type_of_document) AS type_of_document,
-                        MAX(date_order_on_route_and_closed) AS closed_a
-                   FROM tbl_document_legalization_order_details GROUP BY order_id) d
-             ON d.order_id = o.id
      WHERE o.order_type = 9 AND o.date_submitted IS NOT NULL ${idsClause(opts.ids)} ${claimedClause(opts.claimedOnly)}`;
 
-  const raw = await sql<OrderRow>(`${base} ORDER BY o.id DESC LIMIT :cap`, {
+  const baseRows = await sql<
+    Omit<OrderRow, 'dtype' | 'closed_a' | 'closed_b' | 'company'>
+  >(`${base} ORDER BY o.id DESC LIMIT :cap`, {
     ids: opts.ids ?? [],
     cap: Math.min(opts.limit ?? 1500, 3000),
   });
+  const raw: OrderRow[] = baseRows.map((row) => ({
+    ...row,
+    dtype: null,
+    closed_a: null,
+    closed_b: null,
+    company: null,
+  }));
 
   if (raw.length === 0) return [];
   const orderIds = raw.map((r) => r.id);
 
-  const [docs, checks, legs, items, states, skips, addresses] = await Promise.all([
+  const [docs, checks, legs, items, states, skips, addresses, detailAgg, firstDest] =
+    await Promise.all([
     sql<{
       id: number;
       order_no: number;
@@ -662,6 +674,25 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
         WHERE r.order_id IN (:ids) ORDER BY r.id`,
       { ids: orderIds }
     ),
+    // The document type and the "closed" date that used to be on the base query.
+    sql<{
+      order_id: number;
+      dtype: number | null;
+      closed_a: string | null;
+    }>(
+      `SELECT order_id, MAX(type_of_document) AS dtype,
+              MAX(date_order_on_route_and_closed) AS closed_a
+         FROM tbl_document_legalization_order_details
+        WHERE order_id IN (:ids) GROUP BY order_id`,
+      { ids: orderIds }
+    ),
+    // The first destination's closed date, as the old subquery's `ORDER BY id LIMIT 1`.
+    sql<{ order_id: number; closed: string | null }>(
+      `SELECT order_id, visa_date_order_on_route_and_closed AS closed
+         FROM tbl_cls_order_destinations
+        WHERE order_id IN (:ids) ORDER BY id`,
+      { ids: orderIds }
+    ),
   ]);
 
   const skipped = new Set(skips.map((k) => k.doc_id));
@@ -770,6 +801,20 @@ export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]
       resolved: Boolean(i.resolved_at),
     });
     itemsByOrder.set(i.order_id, list);
+  }
+
+  const aggByOrder = new Map(detailAgg.map((d) => [d.order_id, d]));
+  const firstClosedByOrder = new Map<number, string | null>();
+  for (const d of firstDest) {
+    if (!firstClosedByOrder.has(d.order_id)) firstClosedByOrder.set(d.order_id, d.closed);
+  }
+  for (const r of raw) {
+    const agg = aggByOrder.get(r.id);
+    r.dtype = agg?.dtype ?? null;
+    r.closed_a = agg?.closed_a ?? null;
+    r.closed_b = firstClosedByOrder.get(r.id) ?? null;
+    // The first return-details row by id: the same row the old subquery took.
+    r.company = addressByOrder.get(r.id)?.company ?? null;
   }
 
   const now = Date.now();
@@ -994,6 +1039,36 @@ export const nextActionOf = (
     default:
       return { text: 'Completed', act: 'view', button: 'View', waiting: true };
   }
+};
+
+/** How long an unfiltered read of the open orders is reused. */
+const SNAPSHOT_TTL_MS = 15_000;
+
+/** The cache key prefix, so a write can drop every cached read at once. */
+export const SNAPSHOT_CACHE_PREFIX = 'ops-orders:';
+
+/**
+ * The open orders with their Ops state.
+ *
+ * Every order list, the saved-view counts, the dashboard and the Document Hub read
+ * this, and it is the slowest read in the back office, so an unfiltered read is
+ * reused for fifteen seconds. Any admin write drops it at once (see
+ * `admin.routes`), so staff see their own changes straight away; only another
+ * person's change, or a client's, can take up to fifteen seconds to show in a
+ * count. A read for particular orders (`ids`) is always live.
+ *
+ * Callers get their own array, so sorting it cannot disturb anyone else's.
+ */
+export const loadOrders = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> => {
+  if (opts.ids) return loadOrdersFresh(opts);
+
+  const orders = await cached(
+    `${SNAPSHOT_CACHE_PREFIX}${JSON.stringify(opts)}`,
+    SNAPSHOT_TTL_MS,
+    () => loadOrdersFresh(opts)
+  );
+
+  return [...orders];
 };
 
 export const loadOrder = async (id: number): Promise<OrderOps | null> => {
