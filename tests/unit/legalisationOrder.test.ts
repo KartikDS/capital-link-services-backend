@@ -35,6 +35,7 @@ const mockModel = () => ({
 const mockModels = {
   ClsOrder: mockModel(),
   ClsOrderDestinations: mockModel(),
+  ClsOrderDocuments: mockModel(),
   Countries: mockModel(),
   DocumentLegalizationOrderDetails: mockModel(),
   OrderDestinationNotes: mockModel(),
@@ -188,6 +189,7 @@ beforeEach(() => {
   mockModels.ClsOrder.findByPk.mockResolvedValue(order);
   mockModels.ClsOrderDestinations.findOne.mockResolvedValue(destination);
   mockModels.ClsOrderDestinations.findAll.mockResolvedValue([destination]);
+  mockModels.ClsOrderDocuments.findAll.mockResolvedValue([]);
   mockModels.UserAdmin.findByPk.mockResolvedValue({ id: 7, fname: 'Sam', lname: 'Staff' });
   mockModels.UserAdmin.findOne.mockResolvedValue({ id: 3 });
   mockModels.UserAdmin.findAll.mockResolvedValue([]);
@@ -832,6 +834,104 @@ describe('GET /legalisation', () => {
     ]);
     // The tracker must not mistake the website note for a document type.
     expect(screen.tracking).toEqual([]);
+  });
+});
+
+describe('documents the client sent through the portal', () => {
+  const opened = () => ({
+    contentType: 'image/jpeg',
+    bytes: 3,
+    from: 'local',
+    copies: ['local'],
+    stream: Readable.from([Buffer.from('jpg')]),
+  });
+
+  it('lists them on the screen under the client’s own file name, skipping empty rows', async () => {
+    mockModels.Payment.findOne.mockResolvedValue(null);
+    mockModels.DocumentLegalizationOrderDetails.findOne.mockResolvedValue(null);
+    mockModels.OrderTravellerDetails.findOne.mockResolvedValue(null);
+    mockModels.OrderReturnDocumentDetails.findOne.mockResolvedValue(null);
+    mockModels.Countries.findAll.mockResolvedValue([]);
+    mockModels.OrderDlChecklist.findAll.mockResolvedValue([]);
+    mockModels.OrderNotes.findAll.mockResolvedValue([]);
+    mockModels.OrderDestinationNotes.findAll.mockResolvedValue([]);
+    mockModels.ClsOrderDocuments.findAll.mockResolvedValue([
+      row({
+        id: 7,
+        order_id: 10034012,
+        document: '9312/10034012/1793017521067-6af5edb9f3b2-cls-30-years-logo.jpg',
+        status: 1,
+        created: '2026-10-26 23:25:37',
+        modified: '2026-10-26 23:25:37',
+      }),
+      row({ id: 8, order_id: 10034012, document: '', status: 0 }),
+      row({ id: 9, order_id: 10034012, document: 'old scan.pdf', status: 2 }),
+    ]);
+
+    const response = await request(app).get(base);
+
+    expect(response.status).toBe(200);
+    expect(mockModels.ClsOrderDocuments.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { order_id: 10034012 } })
+    );
+    expect(response.body.legalisation.clientDocuments).toEqual([
+      expect.objectContaining({ id: 7, name: 'cls-30-years-logo.jpg', status: 1 }),
+      expect.objectContaining({ id: 9, name: 'old scan.pdf', status: 2 }),
+    ]);
+  });
+
+  it('streams one of this order’s files by its stored path', async () => {
+    mockModels.ClsOrderDocuments.findByPk.mockResolvedValue(
+      row({
+        id: 7,
+        order_id: 10034012,
+        document: '9312/10034012/1793017521067-6af5edb9f3b2-cls-30-years-logo.jpg',
+        status: 1,
+      })
+    );
+    mockOpenDocument.mockResolvedValue(opened());
+
+    const response = await request(app).get(`${base}/documents/7/file`);
+
+    expect(response.status).toBe(200);
+    expect(mockOpenDocument).toHaveBeenCalledWith(
+      '9312/10034012/1793017521067-6af5edb9f3b2-cls-30-years-logo.jpg'
+    );
+    expect(response.headers['content-disposition']).toContain('cls-30-years-logo.jpg');
+  });
+
+  it('falls back to the old order_documents folder for a bare legacy filename', async () => {
+    mockModels.ClsOrderDocuments.findByPk.mockResolvedValue(
+      row({ id: 9, order_id: 10034012, document: 'scan.pdf', status: 1 })
+    );
+    mockOpenDocument.mockResolvedValueOnce(null).mockResolvedValueOnce(opened());
+
+    const response = await request(app).get(`${base}/documents/9/file`);
+
+    expect(response.status).toBe(200);
+    expect(mockOpenDocument).toHaveBeenNthCalledWith(2, 'dev/order_documents/order_10034012/scan.pdf');
+  });
+
+  it('404s a document that belongs to another order, without opening anything', async () => {
+    mockModels.ClsOrderDocuments.findByPk.mockResolvedValue(
+      row({ id: 7, order_id: 555, document: 'x.pdf' })
+    );
+
+    const response = await request(app).get(`${base}/documents/7/file`);
+
+    expect(response.status).toBe(404);
+    expect(mockOpenDocument).not.toHaveBeenCalled();
+  });
+
+  it('404s when the file is recorded but not in storage', async () => {
+    mockModels.ClsOrderDocuments.findByPk.mockResolvedValue(
+      row({ id: 7, order_id: 10034012, document: '9312/10034012/x.pdf' })
+    );
+    mockOpenDocument.mockResolvedValue(null);
+
+    const response = await request(app).get(`${base}/documents/7/file`);
+
+    expect(response.status).toBe(404);
   });
 });
 

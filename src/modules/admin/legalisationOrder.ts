@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   ClsOrder,
   ClsOrderDestinations,
+  ClsOrderDocuments,
   Countries,
   DocumentLegalizationOrderDetails,
   OrderDestinationNotes,
@@ -230,6 +231,20 @@ export interface LegalisationScreen {
     number: number | null;
     note: string | null;
     hasFile: boolean;
+  }[];
+  /**
+   * Files the client sent on this order through the portal — `tbl_cls_order_documents`.
+   * A file attached to a portal chat message lands here, not on the comment, so
+   * without this the Document Legalisation screen had nowhere to show it. Fetch each
+   * from `…/legalisation/documents/:id/file`.
+   */
+  clientDocuments: {
+    id: number;
+    /** The client's own file name, without the timestamp and nonce this API prefixes. */
+    name: string;
+    /** `DOCUMENT_STATUS`: 1 uploaded, 2 reviewed, 3 rejected, 4 approved. */
+    status: number | null;
+    uploadedAt: string | null;
   }[];
   delivery: {
     firstName: string | null;
@@ -558,6 +573,16 @@ const clientContactOf = async (order: ClsOrder) => {
 
 const orderNoOf = (order: ClsOrder): string => clean(order.order_no) ?? String(order.id);
 
+/**
+ * The name to show for a file the client sent: the stored base name without the
+ * `{timestamp}-{nonce}-` this API puts in front, and without its folders. A legacy
+ * bare filename has no such prefix and comes back as it is.
+ */
+const clientDocumentName = (stored: string): string => {
+  const base = path.basename(stored.replace(/\\/g, '/'));
+  return base.replace(/^\d{10,}-[0-9a-f]{12}-/, '') || base;
+};
+
 const laneOf = (note: OrderDestinationNotes): LegalisationLane =>
   // null counts as the client lane, matching `listClientVisibleDestinationNotes`.
   note.is_admin === 1 ? 'admin' : 'client';
@@ -852,6 +877,15 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
       ? await Countries.findByPk(returnDocument.country_id)
       : null;
 
+    // Only rows that hold a file: an empty `document` is a checklist line the
+    // client has not supplied yet.
+    const clientDocuments = (
+      await ClsOrderDocuments.findAll({
+        where: { order_id: orderId },
+        order: [['id', 'ASC']],
+      })
+    ).filter((row) => Boolean(clean(row.document)));
+
     const clientName =
       fullName(traveller?.first_name, traveller?.last_name) ||
       fullName(order.contact_first_name, order.contact_last_name) ||
@@ -939,6 +973,12 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
         number: row.number,
         note: clean(row.note),
         hasFile: Boolean(clean(row.doc_file)),
+      })),
+      clientDocuments: clientDocuments.map((row) => ({
+        id: row.id,
+        name: clientDocumentName(clean(row.document) ?? ''),
+        status: row.status,
+        uploadedAt: toIso(row.modified || row.created),
       })),
       delivery: returnDocument
         ? {
@@ -1609,6 +1649,53 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, checklistId });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // Documents the client sent through the portal
+  // -------------------------------------------------------------------------
+
+  /**
+   * One file the client sent on this order — `tbl_cls_order_documents`, which is
+   * where a file attached to a portal chat message goes.
+   *
+   * Staff-only (the parent router is `requireAdmin`). `:documentId` is checked
+   * against the row's own `order_id`, because that table has no foreign key and the
+   * URL is not to be trusted. Unlike the public-visa screen this does not move the
+   * row to "reviewed" on opening: reading a message attachment is not a review.
+   */
+  router.get(
+    '/:id/legalisation/documents/:documentId/file',
+    validate(z.object({ id: idParam, documentId: idParam }), 'params'),
+    async (req: Request, res: Response) => {
+      const { id, documentId } = validParams<{ id: number; documentId: number }>(req);
+
+      await loadOrder(id);
+
+      const row = await ClsOrderDocuments.findByPk(documentId);
+      if (!row || row.order_id !== id) {
+        throw notFound('We could not find that document on this order.');
+      }
+
+      const stored = clean(row.document);
+      if (!stored) throw notFound('No file has been uploaded for that document.');
+
+      // This API stores full paths; the legacy admin read
+      // `dev/order_documents/order_{orderId}/{file}` for a bare name.
+      const opened =
+        (await openDocument(stored)) ??
+        (await openDocument(`dev/order_documents/order_${id}/${stored}`));
+      if (!opened) {
+        throw notFound('We hold a record of that document but not the file itself.');
+      }
+
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${clientDocumentName(stored).replace(/"/g, '')}"`
+      );
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      streamDocument(opened, res, { orderId: id, documentId });
     }
   );
 
