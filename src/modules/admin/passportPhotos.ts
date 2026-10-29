@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { Op } from 'sequelize';
+import { Op, literal } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { UserClient } from '../../models';
@@ -10,8 +10,10 @@ import { streamDocument } from '../../shared/http/streamDocument';
 import { openDocument } from '../../shared/storage/documents';
 import { toIso } from '../../shared/dates';
 import { clean, fullName } from '../../shared/text';
-import { idParam, validate, validParams } from '../../shared/validation';
+import { idParam, validate, validParams, validQuery } from '../../shared/validation';
 import { cached } from '../../shared/ttlCache';
+import { passportPhotoSearchSql } from './queueSearch';
+import { countKey } from './queues';
 
 /**
  * The legacy "Passport Photos" screen — every client account that has ever
@@ -40,6 +42,7 @@ import { cached } from '../../shared/ttlCache';
 export const passportPhotoRoutes = Router();
 
 const listQuery = z.object({
+  search: z.string().trim().max(100).optional(),
   page: z.coerce.number().int().positive().optional(),
   perPage: z.coerce.number().int().positive().max(100).optional(),
 });
@@ -50,15 +53,24 @@ passportPhotoRoutes.get(
   validate(listQuery, 'query'),
   async (req: Request, res: Response) => {
     const page = readPage(req);
+    const { search } = validQuery<{ search?: string }>(req);
+
+    // Word by word over the name, email, type and date — see `queueSearch`.
+    const conditions = passportPhotoSearchSql(search, (value) =>
+      UserClient.sequelize!.escape(value)
+    );
 
     const where = {
       passport_photo: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] },
+      ...(conditions.length > 0
+        ? { [Op.and]: conditions.map((sql) => literal(sql)) }
+        : {}),
     };
 
     // The total is reused for a minute: it is a count of a large client table, and
     // the rail badge and pager do not need it to the second.
     const [count, rows] = await Promise.all([
-      cached('passport-count', 60_000, () => UserClient.count({ where })),
+      cached(`passport-count:${countKey(where)}`, 60_000, () => UserClient.count({ where })),
       UserClient.findAll({
         where,
         order: [['passport_updated_at', 'DESC']],

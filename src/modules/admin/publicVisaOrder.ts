@@ -39,7 +39,8 @@ import {
   serviceUnavailable,
 } from '../../shared/errors';
 import { streamDocument } from '../../shared/http/streamDocument';
-import { toDateOnly, toIso, toLegacyDateTime } from '../../shared/dates';
+import { dateOnlyForWrite, toDateOnly, toIso, toLegacyDateTime } from '../../shared/dates';
+import { applicantSchema } from '../orders/orders.schemas';
 import {
   discardDocument,
   openDocument,
@@ -1829,6 +1830,136 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
     }
   );
 
+  // -------------------------------------------------------------------------
+  // POST /:id/public-visa/travellers — add travellers to an order already placed
+  //
+  // An order placed for one person is often extended once the client says three
+  // more are coming. The applicants go in as the order form writes them — the same
+  // table, the same columns — and `no_of_traveller` is moved to match, because
+  // every screen that shows "Applicants: n" reads that column rather than counting
+  // rows. Fees are NOT recalculated: they are set by staff on the order, and a
+  // silent change to an invoice is worse than a stale number staff can see.
+  // -------------------------------------------------------------------------
+
+  const addTravellersSchema = z.object({
+    travellers: z
+      .array(applicantSchema)
+      .min(1, 'Add at least one traveller')
+      .max(20, 'Add no more than twenty travellers at a time'),
+  });
+
+  router.post(
+    '/:id/public-visa/travellers',
+    idParams,
+    validate(addTravellersSchema),
+    async (req: Request, res: Response) => {
+      const { id } = validParams<{ id: number }>(req);
+      const { travellers } = req.body as z.infer<typeof addTravellersSchema>;
+
+      const order = await loadOrder(id);
+
+      const existing = await OrderTravellerDetails.count({ where: { order_id: id } });
+
+      if (existing + travellers.length > 20) {
+        throw badRequest('An order can hold no more than twenty travellers.');
+      }
+
+      for (const traveller of travellers) {
+        await OrderTravellerDetails.create({
+          order_id: id,
+          title: clean(traveller.title),
+          first_name: traveller.firstName,
+          middle_name: clean(traveller.middleName),
+          last_name: traveller.lastName,
+          email: clean(traveller.email),
+          phone: clean(traveller.phone),
+          date_of_birth: dateOnlyForWrite(traveller.dateOfBirth),
+          passport_number: clean(traveller.passportNumber),
+          passport_issue_date: dateOnlyForWrite(traveller.passportIssueDate),
+          passport_expiry_date: dateOnlyForWrite(traveller.passportExpiryDate),
+          gender: clean(traveller.gender),
+          occupation: clean(traveller.occupation),
+          organisation: clean(traveller.organisation),
+          // Travels with the order unless staff said otherwise.
+          departure_date:
+            dateOnlyForWrite(traveller.departureDate) ??
+            dateOnlyForWrite(toDateOnly(order.departure_date)),
+          // The order already has a primary applicant; these are additions.
+          is_primary: existing === 0 && traveller === travellers[0] ? 1 : 0,
+          is_client: 0,
+          status: 1,
+        });
+      }
+
+      const total = existing + travellers.length;
+      await order.update({ no_of_traveller: total });
+
+      await audit(req, 'public-visa.travellers-added', {
+        orderId: id,
+        added: travellers.length,
+        total,
+      });
+
+      ok(res, { added: travellers.length, total });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /:id/public-visa/travellers/:travellerId — correct one traveller
+  //
+  // A full replace of the eight details the order form collects, not a merge: the
+  // form sends every field and a blank one means "clear it", which a merge cannot
+  // say. Anything the form never asked for (title, gender, nationality, the
+  // primary flag) is left exactly as it was.
+  // -------------------------------------------------------------------------
+
+  const editTravellerSchema = applicantSchema.pick({
+    firstName: true,
+    lastName: true,
+    email: true,
+    phone: true,
+    dateOfBirth: true,
+    passportNumber: true,
+    passportIssueDate: true,
+    passportExpiryDate: true,
+  });
+
+  router.patch(
+    '/:id/public-visa/travellers/:travellerId',
+    validate(z.object({ id: idParam, travellerId: idParam }), 'params'),
+    validate(editTravellerSchema),
+    async (req: Request, res: Response) => {
+      const { id, travellerId } = validParams<{ id: number; travellerId: number }>(req);
+      const values = req.body as z.infer<typeof editTravellerSchema>;
+
+      await loadOrder(id);
+
+      // The id in the URL is never trusted: it must be a traveller of this order.
+      const traveller = await OrderTravellerDetails.findByPk(travellerId);
+      if (!traveller || traveller.order_id !== id) {
+        throw notFound('We could not find that traveller on this order.');
+      }
+
+      await traveller.update({
+        first_name: values.firstName,
+        last_name: values.lastName,
+        email: clean(values.email),
+        phone: clean(values.phone),
+        date_of_birth: dateOnlyForWrite(values.dateOfBirth),
+        passport_number: clean(values.passportNumber),
+        passport_issue_date: dateOnlyForWrite(values.passportIssueDate),
+        passport_expiry_date: dateOnlyForWrite(values.passportExpiryDate),
+      });
+
+      await audit(req, 'public-visa.traveller-edited', {
+        orderId: id,
+        travellerId,
+      });
+
+      ok(res, { travellerId });
+    }
+  );
+
   router.delete(
     '/:id/public-visa/tracking',
     idParams,
@@ -2527,8 +2658,16 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
             name: fullName(traveller.first_name, traveller.last_name),
             passportNumber: clean(traveller.passport_number),
             dateOfBirth: toDateOnly(traveller.date_of_birth),
+            // Only a bulk order carries a departure date per traveller. On any
+            // other the order's date is the one staff maintain, and a traveller's
+            // copy of it (written when they were saved) goes stale the moment the
+            // order's date is changed.
             departureDate:
-              toDateOnly(traveller.departure_date) ?? toDateOnly(order.departure_date),
+              order.is_bulk === 1
+                ? (toDateOnly(traveller.departure_date) ??
+                  toDateOnly(order.departure_date))
+                : (toDateOnly(order.departure_date) ??
+                  toDateOnly(traveller.departure_date)),
             nationality: clean(nationality?.country_name),
           },
         };

@@ -114,6 +114,78 @@ export const adminPublicVisaPaths = {
     }),
   },
 
+  [`${base}/travellers`]: {
+    post: operation(`${base}/travellers`, {
+      tag,
+      summary: 'Add travellers to an order that has already been placed',
+      description:
+        'Appends travellers to the order — the same `tbl_order_traveller_details` rows the order form writes — and moves `no_of_traveller` to the new total. Only the name is required: staff add people from a phone call with the passport details still to come. Never edits or removes a traveller already there, and does **not** recalculate the fees, which staff set on the order. An order holds at most twenty travellers.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            travellers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['firstName', 'lastName'],
+                properties: {
+                  firstName: f.string(),
+                  lastName: f.string(),
+                  email: f.email(),
+                  phone: f.string(),
+                  dateOfBirth: f.date(),
+                  passportNumber: f.string(),
+                  passportIssueDate: f.date(),
+                  passportExpiryDate: f.date(),
+                },
+              },
+            },
+          },
+          ['travellers']
+        ),
+      },
+      responses: {
+        200: okObject('Added', {
+          added: { type: 'integer' },
+          total: { type: 'integer' },
+        }),
+        400: badRequest,
+        404: notFound,
+      },
+    }),
+  },
+
+  [`${base}/travellers/{travellerId}`]: {
+    patch: operation(`${base}/travellers/{travellerId}`, {
+      tag,
+      summary: 'Correct one traveller’s details',
+      description:
+        'Replaces the eight details the order form collects — first and last name, email, phone, date of birth, passport number and its issue and expiry dates. A blank (`null`) optional field clears the stored value; the name cannot be blank. Anything else on the traveller (title, gender, nationality, who is primary) is left as it was. The traveller must belong to this order.',
+      auth: 'bearer',
+      body: {
+        schema: body(
+          {
+            firstName: f.string(),
+            lastName: f.string(),
+            email: { type: 'string', format: 'email', nullable: true },
+            phone: { type: 'string', nullable: true },
+            dateOfBirth: { type: 'string', format: 'date', nullable: true },
+            passportNumber: { type: 'string', nullable: true },
+            passportIssueDate: { type: 'string', format: 'date', nullable: true },
+            passportExpiryDate: { type: 'string', format: 'date', nullable: true },
+          },
+          ['firstName', 'lastName']
+        ),
+      },
+      responses: {
+        200: okObject('Updated', { travellerId: { type: 'integer' } }),
+        400: badRequest,
+        404: notFound,
+      },
+    }),
+  },
+
   [`${base}/tracking`]: {
     post: operation(`${base}/tracking`, {
       tag,

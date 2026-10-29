@@ -1,5 +1,5 @@
 import { inspect } from 'node:util';
-import { Op, type FindOptions, type WhereOptions } from 'sequelize';
+import { Op, literal, type FindOptions, type WhereOptions } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
@@ -16,6 +16,7 @@ import {
   UserAdmin,
 } from '../../models';
 import { PUBLIC_VISA_REGION } from './publicVisaOrder';
+import { queueSearchSql } from './queueSearch';
 import { paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { cached } from '../../shared/ttlCache';
@@ -72,7 +73,7 @@ const queueParam = z.object({
 });
 
 const queueQuery = z.object({
-  search: z.string().trim().max(64).optional(),
+  search: z.string().trim().max(100).optional(),
   page: z.coerce.number().int().positive().optional(),
   perPage: z.coerce.number().int().positive().max(200).optional(),
 });
@@ -222,17 +223,18 @@ const loadQueueExtras = async (rows: ClsOrder[]) => {
   };
 };
 
-/** The name search every queue offers, over the columns that queue displays. */
-const searchWhere = (
-  search: string | undefined,
-  columns: readonly string[]
-): WhereOptions => {
-  if (!search) return {};
-  return {
-    [Op.or]: columns.map((column) => ({
-      [column]: { [Op.like]: `%${search}%` },
-    })),
-  };
+/**
+ * The search every queue offers, over every column that queue shows. See
+ * `queueSearch` for what is matched and why it is not a single `LIKE`.
+ */
+const searchWhere = (queue: QueueName, search: string | undefined): WhereOptions => {
+  const conditions = queueSearchSql(queue, search, (value) =>
+    ClsOrder.sequelize!.escape(value)
+  );
+
+  return conditions.length > 0
+    ? { [Op.and]: conditions.map((sql) => literal(sql)) }
+    : {};
 };
 
 const firstTraveller = (row: ClsOrder) =>
@@ -315,7 +317,7 @@ queueRoutes.get(
        * the screenshot of it carries rows reading "Pending".
        */
       const { rows, count } = await findPage({
-        where: { order_type: orderType, ...searchWhere(search, ['order_no']) },
+        where: { order_type: orderType, ...searchWhere(queue, search) },
         include: [
           primaryTraveller,
           {
@@ -366,7 +368,7 @@ queueRoutes.get(
           order_type: orderType,
           date_submitted: { [Op.ne]: null },
           status: CLS_ORDER_STATUS.COMPLETED,
-          ...searchWhere(search, ['order_no']),
+          ...searchWhere(queue, search),
         },
         include: [
           primaryTraveller,
@@ -410,7 +412,7 @@ queueRoutes.get(
     if (queue === 'russian-visa-voucher') {
       /** `russianVisaVoucherListAction`. */
       const { rows, count } = await findPage({
-        where: { order_type: orderType, ...searchWhere(search, ['order_no']) },
+        where: { order_type: orderType, ...searchWhere(queue, search) },
         include: [
           primaryTraveller,
           {
@@ -463,7 +465,7 @@ queueRoutes.get(
       const { rows, count } = await findPage({
         where: {
           order_type: orderType,
-          ...searchWhere(search, ['order_no', 'contact_first_name', 'contact_last_name']),
+          ...searchWhere(queue, search),
         },
         include: [
           {
@@ -532,7 +534,7 @@ queueRoutes.get(
     const { rows, count } = await findPage({
       where: {
         order_type: orderType,
-        ...searchWhere(search, ['order_no', 'contact_first_name', 'contact_last_name']),
+        ...searchWhere(queue, search),
       },
       include: [
         { model: Countries, as: 'destinationCountry', required: false },

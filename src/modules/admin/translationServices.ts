@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { Op } from 'sequelize';
+import { Op, literal } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { TranslationServices } from '../../models';
@@ -16,6 +16,7 @@ import {
   translationDocumentPath,
 } from '../../domain/translationDocuments';
 import { cached } from '../../shared/ttlCache';
+import { translationSearchSql } from './queueSearch';
 import { countKey } from './queues';
 
 /**
@@ -60,16 +61,14 @@ translationServiceRoutes.get(
     const { search } = validQuery<{ search?: string }>(req);
     const page = readPage(req);
 
-    const where = search
-      ? {
-          [Op.or]: [
-            { full_name: { [Op.like]: `%${search}%` } },
-            { email: { [Op.like]: `%${search}%` } },
-            { language_from: { [Op.like]: `%${search}%` } },
-            { language_to: { [Op.like]: `%${search}%` } },
-          ],
-        }
-      : {};
+    // Word by word over every column the list shows — see `queueSearch`.
+    const conditions = translationSearchSql(search, (value) =>
+      TranslationServices.sequelize!.escape(value)
+    );
+    const where =
+      conditions.length > 0
+        ? { [Op.and]: conditions.map((sql) => literal(sql)) }
+        : {};
 
     const [count, rows] = await Promise.all([
       cached(`translation-count:${countKey(where)}`, 60_000, () =>

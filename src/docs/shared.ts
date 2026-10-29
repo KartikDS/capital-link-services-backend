@@ -110,6 +110,14 @@ const PATH_PARAMS: Record<string, Record<string, unknown>> = {
     schema: { type: 'integer' },
     description: 'One applicant’s own row id — not the application id.',
   },
+  travellerId: {
+    name: 'travellerId',
+    in: 'path',
+    required: true,
+    schema: { type: 'integer' },
+    description:
+      'A traveller’s own `tbl_order_traveller_details` row id. Checked against the order in the path.',
+  },
   noteId: {
     name: 'noteId',
     in: 'path',

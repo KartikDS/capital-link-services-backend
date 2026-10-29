@@ -1,4 +1,4 @@
-import { Op } from 'sequelize';
+import { Op, literal } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
@@ -30,7 +30,6 @@ import {
   ENABLED,
   PAYMENT_STATUS,
 } from '../../domain/codes';
-import { orderIdFromReference } from '../../domain/orderReference';
 import * as orderService from '../orders/orders.service';
 import { orderDetailRoutes } from './orderDetail';
 import { legalisationOrderRoutes } from './legalisationOrder';
@@ -55,6 +54,7 @@ import { translationServiceRoutes } from './translationServices';
 import { generalSettingsAdminRoutes } from './generalSettings';
 import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
+import { queueSearchSql } from './queueSearch';
 import { countKey, queueRoutes } from './queues';
 import { driverRoutes } from './driver';
 import { opsRoutes } from './ops/ops.routes';
@@ -164,7 +164,7 @@ const queueQuerySchema = z.object({
   consultantId: z.coerce.number().int().positive().optional(),
   unassigned: z.enum(['true', 'false']).optional(),
   unpaid: z.enum(['true', 'false']).optional(),
-  search: z.string().trim().max(64).optional(),
+  search: z.string().trim().max(100).optional(),
   page: z.coerce.number().int().positive().optional(),
   perPage: z.coerce.number().int().positive().max(100).optional(),
 });
@@ -184,7 +184,11 @@ adminRoutes.get(
   async (req: Request, res: Response) => {
     const query = validQuery<z.infer<typeof queueQuerySchema>>(req);
     const page = readPage(req);
-    const searchedId = query.search ? orderIdFromReference(query.search) : null;
+    // Word by word, over every column the list shows — see `queueSearch`. A
+    // pasted `CLS-000012` is still read as the reference it is.
+    const searchConditions = queueSearchSql('all-services', query.search, (value) =>
+      ClsOrder.sequelize!.escape(value)
+    );
 
     const where = {
         date_submitted: { [Op.ne]: null },
@@ -195,18 +199,8 @@ adminRoutes.get(
           ? { visa_cls_team_member: { [Op.is]: null } }
           : {}),
         ...(query.unpaid === 'true' ? { payment_status: PAYMENT_STATUS.FAILED } : {}),
-        ...(query.search
-          ? {
-              [Op.or]: [
-                // A staff member pasting the reference off the client's email.
-                // `order_no` holds the id, so `CLS-000012` has to be read as one
-                // — see `domain/orderReference`.
-                ...(searchedId !== null ? [{ id: searchedId }] : []),
-                { order_no: { [Op.like]: `%${query.search}%` } },
-                { contact_email: { [Op.like]: `%${query.search}%` } },
-                { contact_last_name: { [Op.like]: `%${query.search}%` } },
-              ],
-            }
+        ...(searchConditions.length > 0
+          ? { [Op.and]: searchConditions.map((sql) => literal(sql)) }
           : {}),
       };
 
