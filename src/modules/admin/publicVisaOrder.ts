@@ -39,7 +39,12 @@ import {
   serviceUnavailable,
 } from '../../shared/errors';
 import { streamDocument } from '../../shared/http/streamDocument';
-import { dateOnlyForWrite, toDateOnly, toIso, toLegacyDateTime } from '../../shared/dates';
+import {
+  dateOnlyForWrite,
+  toDateOnly,
+  toIso,
+  toLegacyDateTime,
+} from '../../shared/dates';
 import { applicantSchema } from '../orders/orders.schemas';
 import {
   discardDocument,
@@ -48,7 +53,8 @@ import {
 } from '../../shared/storage/documents';
 import { orderFolder } from '../../shared/storage/documentFolders';
 import { toCents, toCentsOrZero, GST_RATE } from '../../shared/money';
-import { clean, fullName } from '../../shared/text';
+import { clean, fullName, slugify } from '../../shared/text';
+import { resolveNationalitySlug } from '../../domain/countries';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
 import { CLS_CONTACT } from '../../domain/company';
 import { DOCUMENT_STATUS, ENABLED, ORDER_TYPE } from '../../domain/codes';
@@ -193,6 +199,8 @@ export interface PublicVisaTravellerView {
   middleName: string | null;
   gender: string | null;
   nationality: string | null;
+  /** The nationality as the website names it, so an edit form can pre-select it. */
+  nationalitySlug: string | null;
   citizenship: string | null;
   passportType: string | null;
   passportIssueDate: string | null;
@@ -658,9 +666,10 @@ export const parseTravelPurpose = (text: string | null) => {
   const rest: string[] = [];
 
   for (const line of (text ?? '').split(/\r?\n/)) {
-    const match = /^(Visa category|Length of stay|Entry|Account|PO|Company|Billing contact):\s*(.*)$/.exec(
-      line.trim()
-    );
+    const match =
+      /^(Visa category|Length of stay|Entry|Account|PO|Company|Billing contact):\s*(.*)$/.exec(
+        line.trim()
+      );
     if (!match) {
       rest.push(line);
       continue;
@@ -1307,6 +1316,9 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
         nationality: clean(
           row.nationality ? countryOf.get(row.nationality)?.country_name : null
         ),
+        nationalitySlug: slugify(
+          row.nationality ? (countryOf.get(row.nationality)?.country_name ?? null) : null
+        ),
         citizenship: clean(
           row.citizenship ? countryOf.get(row.citizenship)?.country_name : null
         ),
@@ -1841,6 +1853,30 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
   // silent change to an invoice is worse than a stale number staff can see.
   // -------------------------------------------------------------------------
 
+  /**
+   * A nationality slug as the `tbl_countries` row it names, or a refusal.
+   *
+   * Resolved here, against the table the traveller is written to, exactly as the
+   * order form's is — so the nationality recorded is the one chosen, whatever any
+   * other copy of the country list says. An unknown or ambiguous slug is refused
+   * rather than guessed at: the nationality is printed on the courier label.
+   * Blank means none, which clears it.
+   */
+  const nationalityIdOf = async (
+    slug: string | null | undefined
+  ): Promise<number | null> => {
+    const wanted = slug?.trim();
+    if (!wanted) return null;
+
+    const match = await resolveNationalitySlug(wanted);
+    if (match.kind !== 'match') {
+      const message =
+        'That nationality is not in CLS’s country table yet, so it cannot be saved. Ask for it to be added, or choose another.';
+      throw badRequest(message, { nationalitySlug: message });
+    }
+    return match.id;
+  };
+
   const addTravellersSchema = z.object({
     travellers: z
       .array(applicantSchema)
@@ -1865,6 +1901,8 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
       }
 
       for (const traveller of travellers) {
+        const nationalityId = await nationalityIdOf(traveller.nationalitySlug);
+
         await OrderTravellerDetails.create({
           order_id: id,
           title: clean(traveller.title),
@@ -1874,6 +1912,9 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
           email: clean(traveller.email),
           phone: clean(traveller.phone),
           date_of_birth: dateOnlyForWrite(traveller.dateOfBirth),
+          // The order form writes the two together, so this does too.
+          nationality: nationalityId,
+          citizenship: nationalityId,
           passport_number: clean(traveller.passportNumber),
           passport_issue_date: dateOnlyForWrite(traveller.passportIssueDate),
           passport_expiry_date: dateOnlyForWrite(traveller.passportExpiryDate),
@@ -1909,7 +1950,7 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
   //
   // A full replace of the eight details the order form collects, not a merge: the
   // form sends every field and a blank one means "clear it", which a merge cannot
-  // say. Anything the form never asked for (title, gender, nationality, the
+  // say. Anything the form never asked for (title, gender, passport type, the
   // primary flag) is left exactly as it was.
   // -------------------------------------------------------------------------
 
@@ -1922,6 +1963,7 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
     passportNumber: true,
     passportIssueDate: true,
     passportExpiryDate: true,
+    nationalitySlug: true,
   });
 
   router.patch(
@@ -1940,7 +1982,12 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
         throw notFound('We could not find that traveller on this order.');
       }
 
+      const nationalityId = await nationalityIdOf(values.nationalitySlug);
+
       await traveller.update({
+        // Replaced with the rest, so a blank clears it; citizenship follows.
+        nationality: nationalityId,
+        citizenship: nationalityId,
         first_name: values.firstName,
         last_name: values.lastName,
         email: clean(values.email),
@@ -2643,7 +2690,11 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
           destination.visa_type_id
             ? PublicVisaTypes.findByPk(destination.visa_type_id)
             : null,
-          traveller.nationality ? Countries.findByPk(traveller.nationality) : null,
+          // Orders placed in the old system kept the nationality on the
+          // destination rather than the traveller, so it is the fallback.
+          (traveller.nationality ?? destination.nationality)
+            ? Countries.findByPk(traveller.nationality ?? destination.nationality ?? 0)
+            : null,
         ]);
 
         print = {

@@ -17,7 +17,7 @@ import { badRequest, notFound } from '../../shared/errors';
 import { created, ok, paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { validate, validParams, validQuery } from '../../shared/validation';
-import { destinationCountryId } from '../../domain/countries';
+import { destinationCountryId, nationalityCountryId } from '../../domain/countries';
 import {
   quoteClearance,
   quoteLegalisation,
@@ -76,14 +76,13 @@ orderRoutes.get(
   limits.tracking,
   validate(schemas.trackQuerySchema, 'query'),
   async (req: Request, res: Response) => {
-    const { reference, email } = validQuery<z.infer<typeof schemas.trackQuerySchema>>(req);
+    const { reference, email } =
+      validQuery<z.infer<typeof schemas.trackQuerySchema>>(req);
 
     const tracked = await service.track(reference, email);
 
     if (!tracked) {
-      throw notFound(
-        'We could not find an order with that reference and email address.'
-      );
+      throw notFound('We could not find an order with that reference and email address.');
     }
 
     ok(res, { order: tracked });
@@ -294,14 +293,15 @@ const resolveApplicants = async <
   Promise.all(
     applicants.map(async (applicant) => ({
       ...applicant,
-      nationalityId: await resolveCountry(
-        applicant.nationalitySlug,
-        applicant.nationalityId,
-        `${journey} applicant nationality`
-      ),
+      // Not `resolveCountry`: a nationality is not an offer, so a country CLS
+      // does not serve (a disabled row) is still a nationality.
+      nationalityId: await nationalityCountryId({
+        slug: applicant.nationalitySlug,
+        id: applicant.nationalityId,
+        journey: `${journey} applicant nationality`,
+      }),
     }))
   );
-
 
 /** POST /api/orders/police-clearance */
 orderRoutes.post(
@@ -641,7 +641,9 @@ const journeyDocumentsUpload = orderDocumentsUpload(async (req) => {
   const resolved = await service.resolve(referenceFromForm(req));
 
   if (!resolved) {
-    throw notFound('We could not find that order, so there is nowhere to store these files.');
+    throw notFound(
+      'We could not find that order, so there is nowhere to store these files.'
+    );
   }
 
   return documentFolderOf(resolved);
@@ -662,7 +664,9 @@ orderRoutes.post(
     const resolved = await service.resolve(body.reference);
 
     if (!resolved) {
-      throw notFound('We could not find that order, so there is nowhere to store these files.');
+      throw notFound(
+        'We could not find that order, so there is nowhere to store these files.'
+      );
     }
 
     created(res, { documents: await attachDocuments(resolved, files) });
@@ -698,7 +702,12 @@ orderRoutes.get(
       ? result.orders.filter((order) => order.stage === query.stage)
       : result.orders;
 
-    paged(res, 'orders', orders, pageMeta(page, query.stage ? orders.length : result.total));
+    paged(
+      res,
+      'orders',
+      orders,
+      pageMeta(page, query.stage ? orders.length : result.total)
+    );
   }
 );
 

@@ -138,6 +138,9 @@ export const adminPublicVisaPaths = {
                   passportNumber: f.string(),
                   passportIssueDate: f.date(),
                   passportExpiryDate: f.date(),
+                  nationalitySlug: f.string(
+                    'The website’s id for a country, for example `united-kingdom`. Resolved against `tbl_countries`, disabled rows included; an unknown one is refused.'
+                  ),
                 },
               },
             },
@@ -161,7 +164,7 @@ export const adminPublicVisaPaths = {
       tag,
       summary: 'Correct one traveller’s details',
       description:
-        'Replaces the eight details the order form collects — first and last name, email, phone, date of birth, passport number and its issue and expiry dates. A blank (`null`) optional field clears the stored value; the name cannot be blank. Anything else on the traveller (title, gender, nationality, who is primary) is left as it was. The traveller must belong to this order.',
+        'Replaces the nine details the order form collects — first and last name, email, phone, date of birth, passport number and its issue and expiry dates, and the nationality (a website country id, disabled `tbl_countries` rows included). A blank (`null`) optional field clears the stored value; the name cannot be blank. Anything else on the traveller (title, gender, passport type, who is primary) is left as it was. The traveller must belong to this order.',
       auth: 'bearer',
       body: {
         schema: body(
@@ -174,6 +177,7 @@ export const adminPublicVisaPaths = {
             passportNumber: { type: 'string', nullable: true },
             passportIssueDate: { type: 'string', format: 'date', nullable: true },
             passportExpiryDate: { type: 'string', format: 'date', nullable: true },
+            nationalitySlug: { type: 'string', nullable: true },
           },
           ['firstName', 'lastName']
         ),

@@ -125,9 +125,7 @@ const countryRows = (): Promise<CountryRow[]> => {
   return rows;
 };
 
-export const resolveCountrySlug = async (
-  slug: string
-): Promise<CountryMatch> => {
+export const resolveCountrySlug = async (slug: string): Promise<CountryMatch> => {
   const wanted = slugify(slug);
   if (!wanted) return { kind: 'unknown' };
 
@@ -217,4 +215,142 @@ export const destinationCountryId = async (input: {
   }
 
   return match.id;
+};
+
+/**
+ * ---------------------------------------------------------------------------
+ * Nationalities
+ * ---------------------------------------------------------------------------
+ *
+ * A nationality is not a country CLS *serves*. `disabled` on `tbl_countries`
+ * means "do not offer this as a destination", and a client from Belize, Taiwan or
+ * Poland has a nationality whether or not CLS legalises documents into their
+ * country — so resolving one through `resolveCountrySlug`, which skips disabled
+ * rows, silently dropped the nationality of anyone from roughly a third of the
+ * world.
+ *
+ * So a nationality is resolved in two steps. The enabled rows answer first, exactly
+ * as a destination does, so a country with both an enabled and a disabled row
+ * keeps resolving to the enabled one. Only when they say nothing are the disabled
+ * rows consulted — and the website's own spellings that `tbl_countries` writes
+ * differently are bridged by `NATIONALITY_ALIASES`.
+ */
+
+/**
+ * The website's slug → the slug `tbl_countries` derives from its own spelling, for
+ * the countries the two write differently.
+ *
+ * Only what the table genuinely spells another way. A country that is merely
+ * disabled needs no entry: the second step finds it by its own name.
+ */
+const NATIONALITY_ALIASES: Readonly<Record<string, string>> = {
+  'united-states': 'united-states-of-america',
+  brunei: 'brunei-darussalam',
+  croatia: 'croatia-hrvatska',
+  czechia: 'czech-republic',
+  'democratic-republic-of-the-congo': 'democratic-republic-of-congo',
+  'timor-leste': 'east-timor',
+  'north-macedonia': 'macedonia',
+  micronesia: 'micronesia-federated-states-of',
+  moldova: 'moldova-republic-of',
+  'british-virgin-islands': 'virgin-islands-british',
+  // The table's plain "Korea" is the north: the south has its own row.
+  'north-korea': 'korea',
+  'antigua-and-barbuda': 'antigua-and-or-barbuda',
+  'falkland-islands': 'falkland-islands-malvinas',
+  'pitcairn-islands': 'pitcairn',
+  'saint-pierre-and-miquelon': 'st-pierre-and-miquelon',
+  eswatini: 'swaziland',
+  'wallis-and-futuna': 'wallis-and-futuna-islands',
+};
+
+let allCache: { rows: Promise<CountryRow[]>; at: number } | null = null;
+
+/** Every row, disabled included, held on the same terms as `countryRows`. */
+const allCountryRows = (): Promise<CountryRow[]> => {
+  if (allCache && Date.now() - allCache.at < CACHE_MS) return allCache.rows;
+
+  const rows = Countries.findAll({
+    attributes: ['id', 'country_name', 'country_name_display'],
+  }).catch((error: unknown) => {
+    allCache = null;
+    throw error;
+  });
+
+  allCache = { rows, at: Date.now() };
+  return rows;
+};
+
+/** Test seam, like `resetCountryCache`. */
+export const resetNationalityCache = (): void => {
+  allCache = null;
+};
+
+/**
+ * Resolves a nationality slug to a `tbl_countries` row — enabled or not.
+ *
+ * `unknown` and `ambiguous` mean what they do for a destination; a caller decides
+ * what to do about either.
+ */
+export const resolveNationalitySlug = async (slug: string): Promise<CountryMatch> => {
+  const enabled = await resolveCountrySlug(slug);
+  if (enabled.kind !== 'unknown') return enabled;
+
+  const wanted = slugify(slug);
+  if (!wanted) return { kind: 'unknown' };
+
+  const targets = [wanted, NATIONALITY_ALIASES[wanted]].filter(
+    (target): target is string => Boolean(target)
+  );
+  const rows = await allCountryRows();
+
+  for (const column of ['country_name', 'country_name_display'] as const) {
+    const matches = rows.filter((row) => {
+      const own = slugify(row[column]);
+      return own !== null && targets.includes(own);
+    });
+
+    const [row] = matches;
+
+    if (matches.length === 1 && row) {
+      return {
+        kind: 'match',
+        id: row.id,
+        name: row.country_name ?? row.country_name_display ?? String(row.id),
+      };
+    }
+
+    if (matches.length > 1) {
+      return { kind: 'ambiguous', ids: matches.map((one) => one.id) };
+    }
+  }
+
+  return { kind: 'unknown' };
+};
+
+/**
+ * The `tbl_countries.id` a nationality should be recorded as.
+ *
+ * The slug the person chose decides, as for a destination; the caller's own id is
+ * only a fallback for a slug that resolves to nothing, or to two rows.
+ */
+export const nationalityCountryId = async (input: {
+  slug?: string | null;
+  id?: number | null;
+  /** Named in the log line, so a gap can be traced to a journey. */
+  journey: string;
+}): Promise<number | null> => {
+  const slug = input.slug?.trim();
+
+  if (!slug) return input.id ?? null;
+
+  const match = await resolveNationalitySlug(slug);
+
+  if (match.kind === 'match') return match.id;
+
+  logger.error(
+    `${input.journey}: no single tbl_countries row answers to the nationality "${slug}" (${match.kind}), so it is recorded as the id the caller sent instead. Add an entry to NATIONALITY_ALIASES if the table spells the country differently.`
+  );
+
+  return input.id ?? null;
 };
