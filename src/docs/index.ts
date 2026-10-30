@@ -1,4 +1,5 @@
 import { adminPaths } from './admin.paths';
+import { adminArchivePaths } from './admin.archive.paths';
 import { adminPublicVisaPaths } from './admin.publicVisa.paths';
 import { adminVoucherPaths } from './admin.voucher.paths';
 import { adminOpsPaths } from './admin.ops.paths';
@@ -74,6 +75,7 @@ export const paths = stampOperationIds({
   ...adminOpsPaths,
   ...adminDriverPaths,
   ...adminPublicVisaPaths,
+  ...adminArchivePaths,
 });
 
 /**

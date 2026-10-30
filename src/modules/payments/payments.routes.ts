@@ -1,4 +1,4 @@
-import { Op } from 'sequelize';
+import { Op, literal } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { Payment, UserClient } from '../../models';
@@ -26,6 +26,7 @@ import {
 } from '../../domain/codes';
 import { materialiseChecklistQuietly } from '../../domain/checklist';
 import * as orderService from '../orders/orders.service';
+import { hideArchivedSql } from '../admin/orderArchive';
 
 /**
  * Recording payments, and reading them back.
@@ -159,7 +160,9 @@ paymentRoutes.post(
     const payment = await Payment.create({
       client_id: resolved.clientId,
       order_no: Number.isSafeInteger(orderNo) ? orderNo : null,
-      date_paid: body.paidAt ? toLegacyDateTime(new Date(body.paidAt)) : toLegacyDateTime(),
+      date_paid: body.paidAt
+        ? toLegacyDateTime(new Date(body.paidAt))
+        : toLegacyDateTime(),
       // Split rather than dropped whole into `fname`. Stripe sends one `name`
       // and this table has two columns, so writing the full name into `fname`
       // while `lname` still came from the account read back on the receipt as
@@ -220,7 +223,8 @@ paymentRoutes.post(
        */
       await resolved.row.update({
         payment_status: PAYMENT_STATUS.COMPLETE,
-        ...(resolved.row.status === CLS_ORDER_STATUS.PENDING || resolved.row.status === null
+        ...(resolved.row.status === CLS_ORDER_STATUS.PENDING ||
+        resolved.row.status === null
           ? { status: CLS_ORDER_STATUS.COMPLETED }
           : {}),
         ...(resolved.row.date_submitted ? {} : { date_submitted: toLegacyDateTime() }),
@@ -454,8 +458,7 @@ adminPaymentRoutes.post(
 
     ok(res, {
       payment: toReceipt(payment, String(payment.order_no ?? '—')),
-      note:
-        'Recorded by marking the payment unsuccessful. This schema has no refund table or refund status, so the refunded amount and reason exist only in the server log — process the refund itself in Stripe.',
+      note: 'Recorded by marking the payment unsuccessful. This schema has no refund table or refund status, so the refunded amount and reason exist only in the server log — process the refund itself in Stripe.',
     });
   }
 );
@@ -492,8 +495,13 @@ adminPaymentRoutes.get(
 
     const searchedOrderNo = query.search ? Number.parseInt(query.search, 10) : NaN;
 
+    // A payment against an archived order is not listed — it is the order's, and
+    // goes with it; see `orderArchive`. A payment with no order number stays.
+    const hiddenArchived = await hideArchivedSql('order_no', true);
+
     const { rows, count } = await Payment.findAndCountAll({
       where: {
+        ...(hiddenArchived ? { [Op.and]: [literal(hiddenArchived)] } : {}),
         ...(query.status
           ? {
               payment_status:

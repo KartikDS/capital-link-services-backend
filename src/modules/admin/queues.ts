@@ -16,6 +16,7 @@ import {
   UserAdmin,
 } from '../../models';
 import { PUBLIC_VISA_REGION } from './publicVisaOrder';
+import { hideArchivedSql } from './orderArchive';
 import { queueSearchSql } from './queueSearch';
 import { paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
@@ -227,14 +228,18 @@ const loadQueueExtras = async (rows: ClsOrder[]) => {
  * The search every queue offers, over every column that queue shows. See
  * `queueSearch` for what is matched and why it is not a single `LIKE`.
  */
-const searchWhere = (queue: QueueName, search: string | undefined): WhereOptions => {
+const searchWhere = async (
+  queue: QueueName,
+  search: string | undefined
+): Promise<WhereOptions> => {
   const conditions = queueSearchSql(queue, search, (value) =>
     ClsOrder.sequelize!.escape(value)
   );
+  // Archived orders are not in any queue; see `orderArchive`.
+  const hidden = await hideArchivedSql('ClsOrder.id');
+  if (hidden) conditions.push(hidden);
 
-  return conditions.length > 0
-    ? { [Op.and]: conditions.map((sql) => literal(sql)) }
-    : {};
+  return conditions.length > 0 ? { [Op.and]: conditions.map((sql) => literal(sql)) } : {};
 };
 
 const firstTraveller = (row: ClsOrder) =>
@@ -317,7 +322,7 @@ queueRoutes.get(
        * the screenshot of it carries rows reading "Pending".
        */
       const { rows, count } = await findPage({
-        where: { order_type: orderType, ...searchWhere(queue, search) },
+        where: { order_type: orderType, ...(await searchWhere(queue, search)) },
         include: [
           primaryTraveller,
           {
@@ -368,7 +373,7 @@ queueRoutes.get(
           order_type: orderType,
           date_submitted: { [Op.ne]: null },
           status: CLS_ORDER_STATUS.COMPLETED,
-          ...searchWhere(queue, search),
+          ...(await searchWhere(queue, search)),
         },
         include: [
           primaryTraveller,
@@ -412,7 +417,7 @@ queueRoutes.get(
     if (queue === 'russian-visa-voucher') {
       /** `russianVisaVoucherListAction`. */
       const { rows, count } = await findPage({
-        where: { order_type: orderType, ...searchWhere(queue, search) },
+        where: { order_type: orderType, ...(await searchWhere(queue, search)) },
         include: [
           primaryTraveller,
           {
@@ -465,7 +470,7 @@ queueRoutes.get(
       const { rows, count } = await findPage({
         where: {
           order_type: orderType,
-          ...searchWhere(queue, search),
+          ...(await searchWhere(queue, search)),
         },
         include: [
           {
@@ -534,7 +539,7 @@ queueRoutes.get(
     const { rows, count } = await findPage({
       where: {
         order_type: orderType,
-        ...searchWhere(queue, search),
+        ...(await searchWhere(queue, search)),
       },
       include: [
         { model: Countries, as: 'destinationCountry', required: false },

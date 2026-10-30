@@ -54,6 +54,7 @@ import { translationServiceRoutes } from './translationServices';
 import { generalSettingsAdminRoutes } from './generalSettings';
 import { freeVisaDocumentAdminRoutes } from './freeVisaDocument';
 import { userRoutes } from './users';
+import { archiveRoutes, hideArchivedSql } from './orderArchive';
 import { queueSearchSql } from './queueSearch';
 import { countKey, queueRoutes } from './queues';
 import { driverRoutes } from './driver';
@@ -101,6 +102,10 @@ adminRoutes.use((req, res, next) => {
 // ---------------------------------------------------------------------------
 
 const readDashboardMetrics = async () => {
+  // The counts leave archived orders out, as the lists do.
+  const hidden = await hideArchivedSql('ClsOrder.id');
+  const visible = hidden ? { [Op.and]: [literal(hidden)] } : {};
+
   const [
     pendingOrders,
     completedOrders,
@@ -110,13 +115,18 @@ const readDashboardMetrics = async () => {
     documentsAwaitingReview,
   ] = await Promise.all([
     ClsOrder.count({
-      where: { status: CLS_ORDER_STATUS.PENDING, date_submitted: { [Op.ne]: null } },
+      where: {
+        status: CLS_ORDER_STATUS.PENDING,
+        date_submitted: { [Op.ne]: null },
+        ...visible,
+      },
     }),
-    ClsOrder.count({ where: { status: CLS_ORDER_STATUS.COMPLETED } }),
+    ClsOrder.count({ where: { status: CLS_ORDER_STATUS.COMPLETED, ...visible } }),
     ClsOrder.count({
       where: {
         payment_status: PAYMENT_STATUS.FAILED,
         date_submitted: { [Op.ne]: null },
+        ...visible,
       },
     }),
     // Received today, not "never handled": the admin cannot mark an enquiry as
@@ -189,29 +199,28 @@ adminRoutes.get(
     const searchConditions = queueSearchSql('all-services', query.search, (value) =>
       ClsOrder.sequelize!.escape(value)
     );
+    // Archived orders are not listed; see `orderArchive`.
+    const hiddenArchived = await hideArchivedSql('ClsOrder.id');
+    if (hiddenArchived) searchConditions.push(hiddenArchived);
 
     const where = {
-        date_submitted: { [Op.ne]: null },
-        ...(query.status !== undefined ? { status: query.status } : {}),
-        ...(query.orderType ? { order_type: query.orderType } : {}),
-        ...(query.consultantId ? { visa_cls_team_member: query.consultantId } : {}),
-        ...(query.unassigned === 'true'
-          ? { visa_cls_team_member: { [Op.is]: null } }
-          : {}),
-        ...(query.unpaid === 'true' ? { payment_status: PAYMENT_STATUS.FAILED } : {}),
-        ...(searchConditions.length > 0
-          ? { [Op.and]: searchConditions.map((sql) => literal(sql)) }
-          : {}),
-      };
+      date_submitted: { [Op.ne]: null },
+      ...(query.status !== undefined ? { status: query.status } : {}),
+      ...(query.orderType ? { order_type: query.orderType } : {}),
+      ...(query.consultantId ? { visa_cls_team_member: query.consultantId } : {}),
+      ...(query.unassigned === 'true' ? { visa_cls_team_member: { [Op.is]: null } } : {}),
+      ...(query.unpaid === 'true' ? { payment_status: PAYMENT_STATUS.FAILED } : {}),
+      ...(searchConditions.length > 0
+        ? { [Op.and]: searchConditions.map((sql) => literal(sql)) }
+        : {}),
+    };
 
     // The total is counted on the orders table alone (the country join cannot
     // change it) and reused for thirty seconds, so the page of rows and the total
     // are read side by side instead of one waiting for a join-wide DISTINCT count.
     // Every admin write drops the cached totals (see the middleware above).
     const [count, rows] = await Promise.all([
-      cached(`orders-count:${countKey(where)}`, 30_000, () =>
-        ClsOrder.count({ where })
-      ),
+      cached(`orders-count:${countKey(where)}`, 30_000, () => ClsOrder.count({ where })),
       ClsOrder.findAll({
         where,
         include: [{ model: Countries, as: 'destinationCountry', required: false }],
@@ -923,18 +932,14 @@ adminRoutes.get(
     'query'
   ),
   async (req: Request, res: Response) => {
-    const query = validQuery<{ area?: string; userId?: number; search?: string }>(
-      req
-    );
+    const query = validQuery<{ area?: string; userId?: number; search?: string }>(req);
     const page = readPage(req);
 
     const { rows, count } = await Logs.findAndCountAll({
       where: {
         ...(query.area ? { area: query.area } : {}),
         ...(query.userId ? { user_id: query.userId } : {}),
-        ...(query.search
-          ? { log_details: { [Op.like]: `%${query.search}%` } }
-          : {}),
+        ...(query.search ? { log_details: { [Op.like]: `%${query.search}%` } } : {}),
       },
       order: [['log_datetime', 'DESC']],
       limit: page.limit,
@@ -992,8 +997,12 @@ adminRoutes.get(
  * of the download and buffer the result in this process's memory first.
  */
 adminRoutes.get('/orders/export', async (req: Request, res: Response) => {
+  const hiddenArchived = await hideArchivedSql('ClsOrder.id');
   const rows = await ClsOrder.findAll({
-    where: { date_submitted: { [Op.ne]: null } },
+    where: {
+      date_submitted: { [Op.ne]: null },
+      ...(hiddenArchived ? { [Op.and]: [literal(hiddenArchived)] } : {}),
+    },
     order: [['date_submitted', 'DESC']],
     limit: 5000,
   });
@@ -1228,6 +1237,9 @@ adminRoutes.use('/orders', clearanceOrderRoutes(audit));
 
 /** The Public Visa order screen: `/orders/:id/public-visa…`. Same `audit` hand-off. */
 adminRoutes.use('/orders', publicVisaOrderRoutes(audit));
+
+/** Archiving an order, and the list of archived ones. */
+adminRoutes.use('/', archiveRoutes(audit));
 
 /**
  * Full CRUD for clients, staff, embassy and TPN accounts — the legacy sidebar's

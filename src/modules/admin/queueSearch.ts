@@ -213,7 +213,7 @@ const referenceMatches: Predicate = (_like, word) => {
 };
 
 /** `tbl_cls_order.order_type`, in the words the Orders tabs use. */
-const SERVICE_WORDS: readonly { code: number; label: string }[] = [
+export const SERVICE_WORDS: readonly { code: number; label: string }[] = [
   { code: 1, label: 'Visa' },
   { code: 2, label: 'TPN' },
   { code: 3, label: 'TPN and Visa' },
