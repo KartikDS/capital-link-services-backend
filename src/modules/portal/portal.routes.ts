@@ -10,6 +10,7 @@ import {
   profilePhotoUpload,
 } from '../../middleware/upload';
 import {
+  displayNameOf,
   documentStorageDriver,
   openDocument,
   storedPathOf,
@@ -404,7 +405,7 @@ portalRoutes.get(
 
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${path.basename(photo.storedAs)}"`
+      `attachment; filename="${displayNameOf(photo.storedAs).replace(/"/g, '')}"`
     );
     streamDocument(opened, res, { photo: photo.storedAs });
   }

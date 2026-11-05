@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
@@ -14,7 +13,7 @@ import { ok } from '../../shared/http/responses';
 import { conflict, notFound } from '../../shared/errors';
 import { streamDocument } from '../../shared/http/streamDocument';
 import { toDateOnly, toIso, toLegacyDateTime } from '../../shared/dates';
-import { openDocument } from '../../shared/storage/documents';
+import { displayNameOf, openDocument } from '../../shared/storage/documents';
 import { toCents } from '../../shared/money';
 import { clean, fullName } from '../../shared/text';
 import { idParam, validate, validParams } from '../../shared/validation';
@@ -365,7 +364,7 @@ const buildScreen = async (order: ClsOrder): Promise<VoucherScreen> => {
       comment: clean(details?.comment),
       passportFile: {
         hasFile: passportFile !== null,
-        name: passportFile ? path.basename(passportFile.replace(/\\/g, '/')) : null,
+        name: passportFile ? displayNameOf(passportFile) : null,
       },
       employment: {
         ...employment,
@@ -394,7 +393,7 @@ const buildScreen = async (order: ClsOrder): Promise<VoucherScreen> => {
     })),
     documents: documents.map((row) => ({
       id: row.id,
-      name: path.basename((clean(row.document) ?? `Document ${row.id}`).replace(/\\/g, '/')),
+      name: displayNameOf(clean(row.document)),
       status: row.status,
       uploadedAt: toIso(row.created),
     })),
@@ -513,7 +512,7 @@ export const russianVoucherOrderRoutes = (audit: VoucherAudit): Router => {
 
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+      `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
     );
     res.setHeader('X-Content-Type-Options', 'nosniff');
     streamDocument(opened, res, { orderId: id });
@@ -542,7 +541,7 @@ export const russianVoucherOrderRoutes = (audit: VoucherAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, documentId });

@@ -11,6 +11,7 @@ import { notFound } from '../../shared/errors';
 import { toLegacyDate, toLegacyDateTime } from '../../shared/dates';
 import { clean } from '../../shared/text';
 import { logger } from '../../shared/logger';
+import { displayNameOf } from '../../shared/storage/documents';
 import {
   clsStageOf,
   legacyStageOf,
@@ -512,7 +513,7 @@ export const findOwnedDocument = async (
   if (stored === null) throw notFound('We could not find that document.');
   if (!stored) throw notFound('That document is no longer available.');
 
-  return { storedPath: stored, name: stored.split('/').pop() ?? 'document' };
+  return { storedPath: stored, name: displayNameOf(stored) };
 };
 
 /**
@@ -723,7 +724,7 @@ const outstandingDocumentSummaries = async (clientId: number) => {
 
   return rows.map((row) => ({
     reference: referenceOf.get(row.order_id ?? 0) ?? '—',
-    name: clean(row.document) ?? 'Document',
+    name: displayNameOf(clean(row.document)),
     at: row.modified ?? row.created ?? null,
   }));
 };

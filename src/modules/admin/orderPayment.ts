@@ -169,7 +169,11 @@ interface ProofRow {
   recorded_name: string | null;
 }
 
-const readProofs = async (orderId: number): Promise<AdminPaymentProof[]> => {
+/** An order's hand-recorded payments; with `paymentId`, just the one `tbl_payment` row's. */
+export const readProofs = async (
+  orderId: number,
+  paymentId?: number
+): Promise<AdminPaymentProof[]> => {
   if (!(await proofsAvailable())) return [];
 
   const rows = await sequelize.query<ProofRow>(
@@ -178,8 +182,9 @@ const readProofs = async (orderId: number): Promise<AdminPaymentProof[]> => {
             TRIM(CONCAT(COALESCE(a.fname, ''), ' ', COALESCE(a.lname, ''))) AS recorded_name
        FROM tbl_ops_payment_proof p
        LEFT JOIN tbl_user_admin a ON a.id = p.recorded_by
-      WHERE p.order_id = :orderId ORDER BY p.id DESC`,
-    { type: QueryTypes.SELECT, replacements: { orderId } }
+      WHERE p.order_id = :orderId ${paymentId === undefined ? '' : 'AND p.payment_id = :paymentId'}
+      ORDER BY p.id DESC`,
+    { type: QueryTypes.SELECT, replacements: { orderId, paymentId } }
   );
 
   return rows.map((r) => ({

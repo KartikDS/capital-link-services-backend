@@ -13,6 +13,7 @@ import { clean } from '../../shared/text';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
 import {
   splitTranslationDocumentNames,
+  translationDisplayNameOf,
   translationDocumentPath,
 } from '../../domain/translationDocuments';
 import { cached } from '../../shared/ttlCache';
@@ -93,6 +94,8 @@ translationServiceRoutes.get(
         languageFrom: clean(row.language_from),
         languageTo: clean(row.language_to),
         documents: splitTranslationDocumentNames(row.document_name),
+        // `documents` is the key a download is requested by; this is what to print.
+        documentNames: splitTranslationDocumentNames(row.document_name).map(translationDisplayNameOf),
         createdAt: toIso(row.created),
       })),
       pageMeta(page, count)
@@ -129,7 +132,7 @@ translationServiceRoutes.get(
 
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${path.basename(filename)}"`
+      `inline; filename="${translationDisplayNameOf(path.basename(filename)).replace(/"/g, '')}"`
     );
     streamDocument(opened, res, { translationServiceId: id });
   }

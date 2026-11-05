@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
@@ -21,7 +20,7 @@ import { badRequest, notFound } from '../../shared/errors';
 import { streamDocument } from '../../shared/http/streamDocument';
 import { toDateOnly, toIso, toLegacyDateTime } from '../../shared/dates';
 import { toCents } from '../../shared/money';
-import { openDocument } from '../../shared/storage/documents';
+import { displayNameOf, openDocument } from '../../shared/storage/documents';
 import { clean, fullName } from '../../shared/text';
 import { idParam, validate, validParams } from '../../shared/validation';
 import { ENABLED, ORDER_TYPE, DOCUMENT_STATE } from '../../domain/codes';
@@ -521,7 +520,7 @@ export const clearanceOrderRoutes = (audit: LegalisationAudit): Router => {
       },
       documents: documents.map((row) => ({
         id: row.id,
-        name: clean(row.document) ?? 'Document',
+        name: displayNameOf(clean(row.document)),
         state: DOCUMENT_STATE[row.status ?? 0] ?? 'awaiting',
         uploaded: toIso(row.created),
       })),
@@ -694,7 +693,7 @@ export const clearanceOrderRoutes = (audit: LegalisationAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, documentId });

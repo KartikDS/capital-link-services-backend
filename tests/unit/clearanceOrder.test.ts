@@ -53,6 +53,10 @@ jest.mock('../../src/modules/admin/orderPayment', () => ({
 const mockOpenDocument = jest.fn();
 
 jest.mock('../../src/shared/storage/documents', () => ({
+  displayNameOf: (stored: string | null): string =>
+    (
+      jest.requireActual('../../src/shared/storage/documents') as typeof import('../../src/shared/storage/documents')
+    ).displayNameOf(stored),
   storedPathOf: (file: { key: string }) => file.key,
   discardDocument: jest.fn(),
   openDocument: (...args: unknown[]): unknown => mockOpenDocument(...args),

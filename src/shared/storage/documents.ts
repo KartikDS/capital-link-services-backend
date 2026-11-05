@@ -153,6 +153,36 @@ export const storedPathOf = (file: Express.Multer.File): string => {
   return path.relative(env.uploads.dir, file.path).replace(/\\/g, '/');
 };
 
+/**
+ * The name to show a person for a stored document.
+ *
+ * The stored path is a storage key — `clients/9216/1788998196055-77143399a844-
+ * 2-i-addendum.pdf`, or `9216/10034664/…` under the per-order layout — and it is
+ * what the portal and the admin screens used to print. The folders and the
+ * `{timestamp}-{nonce}-` in front exist for uniqueness and are noise to a reader,
+ * so both are dropped: `2-i-addendum.pdf`.
+ *
+ * The slug is all that survives of the client's own filename (lowercased, with
+ * punctuation turned to dashes — see `slugForPath`), and there is no column to
+ * hold the original, so this is the closest to it that can be shown.
+ *
+ * A legacy bare filename has no prefix and comes back as it is. An upload whose
+ * name slugged to nothing (`照片.jpg`) is stored `{timestamp}-{nonce}.jpg`; once
+ * the prefix goes there is nothing left, so it is shown as `Document.jpg` rather
+ * than as a run of digits.
+ */
+export const displayNameOf = (stored: string | null | undefined): string => {
+  const base = path.posix.basename((stored ?? '').replace(/\\/g, '/'));
+  if (!base) return 'Document';
+
+  const stripped = base.replace(/^\d{10,}-[0-9a-f]{12}(?:-|(?=\.[^.]+$)|$)/, '');
+  if (stripped === base) return base;
+
+  return stripped.startsWith('.') || stripped === ''
+    ? `Document${stripped}`
+    : stripped;
+};
+
 // ---------------------------------------------------------------------------
 // Which copies exist
 // ---------------------------------------------------------------------------

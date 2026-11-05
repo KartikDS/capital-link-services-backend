@@ -27,6 +27,7 @@ import {
 import { materialiseChecklistQuietly } from '../../domain/checklist';
 import * as orderService from '../orders/orders.service';
 import { hideArchivedSql } from '../admin/orderArchive';
+import { readProofs } from '../admin/orderPayment';
 
 /**
  * Recording payments, and reading them back.
@@ -290,6 +291,23 @@ const toReceipt = (payment: Payment, reference: string) => ({
 });
 
 /**
+ * How a payment reached us. The synthesised transaction ids are the only record of
+ * it in a legacy-shaped row: `MANUAL-` is Mark as paid, `ACCT-` an on-account
+ * payment, and anything else is Stripe's own id.
+ */
+export type PaymentSource = 'stripe' | 'manual' | 'account';
+
+const sourceOf = (payment: Payment): PaymentSource => {
+  const id = clean(payment.transaction_id) ?? '';
+  if (id.startsWith('MANUAL-')) return 'manual';
+  if (id.startsWith('ACCT-')) return 'account';
+  return payment.payment_option === PAYMENT_OPTION.CREDIT_CARD ? 'stripe' : 'account';
+};
+
+/** Ids the Stripe dashboard resolves at `/payments/<id>`; a Checkout session id does not. */
+const STRIPE_DASHBOARD_ID = /^(pi|ch|py)_[A-Za-z0-9]+$/;
+
+/**
  * GET /api/payments/mine
  *
  * A client's own payments. Joined through `client_id` rather than through their
@@ -540,9 +558,74 @@ adminPaymentRoutes.get(
     paged(
       res,
       'payments',
-      rows.map((row) => toReceipt(row, String(row.order_no ?? '—'))),
+      rows.map((row) => ({
+        ...toReceipt(row, String(row.order_no ?? '—')),
+        source: sourceOf(row),
+      })),
       pageMeta(page, count)
     );
+  }
+);
+
+/**
+ * GET /api/payments/admin/:id — everything held about one payment, for the
+ * Payments screen's View modal.
+ *
+ * Which block fills it depends on how the money arrived, and `source` says so:
+ * **stripe** (the webhook's record — Stripe's id, what it captured, who paid),
+ * **manual** (staff pressed Mark as paid: the method, reference, date and note
+ * they typed, and the screenshot or receipt they attached — held in
+ * `tbl_ops_payment_proof`) or **account** (settled against the client's terms).
+ *
+ * Nothing card-shaped is read: those `tbl_payment` columns are never written (see
+ * the note at the top), and the email stays masked as it is in the list.
+ */
+adminPaymentRoutes.get(
+  '/:id',
+  validate(z.object({ id: idParam }), 'params'),
+  async (req: Request, res: Response) => {
+    const { id } = validParams<{ id: number }>(req);
+    const payment = await Payment.findByPk(id);
+    if (!payment) throw notFound('We could not find that payment.');
+
+    const source = sourceOf(payment);
+    const orderId = payment.order_no;
+
+    const proofs =
+      source === 'manual' && orderId !== null ? await readProofs(orderId, payment.id) : [];
+
+    const transactionId = clean(payment.transaction_id);
+    const billing = [
+      clean(payment.mba_address) ?? clean(payment.address),
+      clean(payment.mba_city) ?? clean(payment.city),
+      clean(payment.mba_state) ?? clean(payment.state),
+      clean(payment.mba_postcode) ?? clean(payment.postcode),
+    ].filter((part): part is string => part !== null);
+
+    ok(res, {
+      payment: {
+        ...toReceipt(payment, String(orderId ?? '—')),
+        source,
+        orderId,
+        accountNumber: clean(payment.account_no),
+        payer: {
+          name: fullName(payment.fname, payment.lname),
+          email: maskEmail(payment.email),
+          phone: clean(payment.phone),
+          billingAddress: billing.length > 0 ? billing.join(', ') : null,
+        },
+        stripe:
+          source === 'stripe' && transactionId
+            ? {
+                id: transactionId,
+                dashboardUrl: STRIPE_DASHBOARD_ID.test(transactionId)
+                  ? `https://dashboard.stripe.com/payments/${transactionId}`
+                  : null,
+              }
+            : null,
+        proof: proofs[0] ?? null,
+      },
+    });
   }
 );
 

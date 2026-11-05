@@ -50,6 +50,7 @@ import {
   discardDocument,
   openDocument,
   storedPathOf,
+  displayNameOf,
 } from '../../shared/storage/documents';
 import { orderFolder } from '../../shared/storage/documentFolders';
 import { toCents, toCentsOrZero, GST_RATE } from '../../shared/money';
@@ -1381,8 +1382,8 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
         );
         return {
           id: row.id,
-          document: named ?? stored,
-          fileName: stored ? path.basename(stored.replace(/\\/g, '/')) : null,
+          document: named ?? (stored ? displayNameOf(stored) : null),
+          fileName: stored ? displayNameOf(stored) : null,
           uploadedAt:
             row.status && row.status > DOCUMENT_STATUS.UNATTENDED
               ? toIso(row.modified)
@@ -1974,7 +1975,7 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
       const { id, travellerId } = validParams<{ id: number; travellerId: number }>(req);
       const values = req.body as z.infer<typeof editTravellerSchema>;
 
-      await loadOrder(id);
+      const order = await loadOrder(id);
 
       // The id in the URL is never trusted: it must be a traveller of this order.
       const traveller = await OrderTravellerDetails.findByPk(travellerId);
@@ -1997,6 +1998,16 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
         passport_issue_date: dateOnlyForWrite(values.passportIssueDate),
         passport_expiry_date: dateOnlyForWrite(values.passportExpiryDate),
       });
+
+      // The orders list and search read the order's own contact name, not the
+      // traveller's, so a corrected name would otherwise never reach them. Only
+      // followed for the primary traveller, the person the list names.
+      if (traveller.is_primary === 1) {
+        await order.update({
+          contact_first_name: values.firstName,
+          contact_last_name: values.lastName,
+        });
+      }
 
       await audit(req, 'public-visa.traveller-edited', {
         orderId: id,
@@ -2148,7 +2159,7 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, noteId });
@@ -2241,7 +2252,7 @@ export const publicVisaOrderRoutes = (audit: PublicVisaAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, documentId });

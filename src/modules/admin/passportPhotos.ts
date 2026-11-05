@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { Op, literal } from 'sequelize';
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
@@ -7,7 +6,7 @@ import { notFound } from '../../shared/errors';
 import { paged } from '../../shared/http/responses';
 import { pageMeta, readPage } from '../../shared/http/pagination';
 import { streamDocument } from '../../shared/http/streamDocument';
-import { openDocument } from '../../shared/storage/documents';
+import { displayNameOf, openDocument } from '../../shared/storage/documents';
 import { toIso } from '../../shared/dates';
 import { clean, fullName } from '../../shared/text';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
@@ -117,7 +116,7 @@ passportPhotoRoutes.get(
 
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${path.basename(client.passport_photo!)}"`
+      `inline; filename="${displayNameOf(client.passport_photo!).replace(/"/g, '')}"`
     );
     streamDocument(opened, res, { clientId: id });
   }

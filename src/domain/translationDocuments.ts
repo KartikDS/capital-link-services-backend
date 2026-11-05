@@ -269,3 +269,17 @@ export const splitTranslationDocumentNames = (
     .split(TRANSLATION_DOCUMENT_SEPARATOR)
     .map((name) => name.trim())
     .filter((name) => name.length > 0);
+
+/**
+ * The name to show for a translation enquiry's stored document.
+ *
+ * `translationStoredName` puts `{8 base-36 chars}-{6 hex}-` in front of the
+ * client's slug; it is for uniqueness and is noise to a reader. Only ever call
+ * this on a name that came out of `splitTranslationDocumentNames` — the prefix is
+ * too loose to strip from an arbitrary filename.
+ */
+export const translationDisplayNameOf = (stored: string): string => {
+  const stripped = stored.replace(/^[0-9a-z]{8}-[0-9a-f]{6}(?:-|(?=\.[^.]+$)|$)/, '');
+  if (stripped === stored) return stored;
+  return stripped === '' || stripped.startsWith('.') ? `Document${stripped}` : stripped;
+};

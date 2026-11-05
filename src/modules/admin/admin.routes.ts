@@ -22,6 +22,7 @@ import { pageMeta, readPage } from '../../shared/http/pagination';
 import { toIso, toLegacyDateTime } from '../../shared/dates';
 import { centsToNumber, toCents } from '../../shared/money';
 import { clean, cleanOr, fullName, truncate } from '../../shared/text';
+import { displayNameOf } from '../../shared/storage/documents';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
 import { audit } from '../../domain/audit';
 import {
@@ -253,6 +254,81 @@ adminRoutes.get(
       })),
       pageMeta(page, count)
     );
+  }
+);
+
+/**
+ * GET /api/admin/search?q= — the topbar's instant-search dropdown.
+ *
+ * A handful of orders and clients in one round trip, so the box can answer as the
+ * person types. Orders use the same word-by-word search as the work queue (and
+ * hide archived orders as it does); clients match name, email, company and
+ * account number. Documents are not here: they live in the Ops document hub.
+ */
+const SEARCH_LIMIT = 5;
+
+adminRoutes.get(
+  '/search',
+  validate(z.object({ q: z.string().trim().max(100).optional() }), 'query'),
+  async (req: Request, res: Response) => {
+    const { q } = validQuery<{ q?: string }>(req);
+    const text = (q ?? '').trim();
+    if (text.length < 2) return ok(res, { orders: [], clients: [] });
+
+    const conditions = queueSearchSql('all-services', text, (value) =>
+      ClsOrder.sequelize!.escape(value)
+    );
+    const hiddenArchived = await hideArchivedSql('ClsOrder.id');
+    if (hiddenArchived) conditions.push(hiddenArchived);
+
+    const like = `%${text.replace(/[\\%_]/g, '\\$&')}%`;
+
+    const [orders, clients] = await Promise.all([
+      ClsOrder.findAll({
+        where: {
+          date_submitted: { [Op.ne]: null },
+          [Op.and]: conditions.map((sql) => literal(sql)),
+        },
+        include: [{ model: Countries, as: 'destinationCountry', required: false }],
+        order: [['date_submitted', 'DESC']],
+        limit: SEARCH_LIMIT,
+      }),
+      UserClient.findAll({
+        where: {
+          [Op.or]: [
+            { email: { [Op.like]: like } },
+            { fname: { [Op.like]: like } },
+            { lname: { [Op.like]: like } },
+            { company: { [Op.like]: like } },
+            { display_id: { [Op.like]: like } },
+          ],
+        },
+        order: [['id', 'DESC']],
+        limit: SEARCH_LIMIT,
+      }),
+    ]);
+
+    ok(res, {
+      orders: orders.map((row) => ({
+        id: row.id,
+        orderType: row.order_type,
+        contact: fullName(row.contact_first_name, row.contact_last_name),
+        contactEmail: clean(row.contact_email),
+        destination: clean(
+          (row as unknown as { destinationCountry?: { country_name: string | null } })
+            .destinationCountry?.country_name
+        ),
+        status: row.status,
+        submittedAt: toIso(row.date_submitted),
+      })),
+      clients: clients.map((row) => ({
+        id: row.id,
+        accountNumber: clean(row.display_id),
+        name: fullName(row.fname, row.lname),
+        email: clean(row.email),
+        company: clean(row.company),
+      })),
+    });
   }
 );
 
@@ -636,7 +712,7 @@ adminRoutes.get('/documents/awaiting-review', async (req: Request, res: Response
     rows.map((row) => ({
       id: String(row.id),
       orderId: row.order_id,
-      name: clean(row.document),
+      name: displayNameOf(clean(row.document)),
       uploadedAt: toIso(row.created),
     })),
     pageMeta(page, count)

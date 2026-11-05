@@ -27,7 +27,12 @@ import { ok } from '../../shared/http/responses';
 import { badRequest, conflict, forbidden, notFound } from '../../shared/errors';
 import { streamDocument } from '../../shared/http/streamDocument';
 import { toDateOnly, toIso, toLegacyDateTime } from '../../shared/dates';
-import { discardDocument, openDocument, storedPathOf } from '../../shared/storage/documents';
+import {
+  discardDocument,
+  displayNameOf,
+  openDocument,
+  storedPathOf,
+} from '../../shared/storage/documents';
 import { orderFolder } from '../../shared/storage/documentFolders';
 import { clean, fullName } from '../../shared/text';
 import { idParam, validate, validParams, validQuery } from '../../shared/validation';
@@ -573,16 +578,6 @@ const clientContactOf = async (order: ClsOrder) => {
 
 const orderNoOf = (order: ClsOrder): string => clean(order.order_no) ?? String(order.id);
 
-/**
- * The name to show for a file the client sent: the stored base name without the
- * `{timestamp}-{nonce}-` this API puts in front, and without its folders. A legacy
- * bare filename has no such prefix and comes back as it is.
- */
-const clientDocumentName = (stored: string): string => {
-  const base = path.basename(stored.replace(/\\/g, '/'));
-  return base.replace(/^\d{10,}-[0-9a-f]{12}-/, '') || base;
-};
-
 const laneOf = (note: OrderDestinationNotes): LegalisationLane =>
   // null counts as the client lane, matching `listClientVisibleDestinationNotes`.
   note.is_admin === 1 ? 'admin' : 'client';
@@ -976,7 +971,7 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
       })),
       clientDocuments: clientDocuments.map((row) => ({
         id: row.id,
-        name: clientDocumentName(clean(row.document) ?? ''),
+        name: displayNameOf(clean(row.document)),
         status: row.status,
         uploadedAt: toIso(row.modified || row.created),
       })),
@@ -1606,7 +1601,7 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, noteId });
@@ -1645,7 +1640,7 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${path.basename(stored.replace(/\\/g, '/'))}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, checklistId });
@@ -1692,7 +1687,7 @@ export const legalisationOrderRoutes = (audit: LegalisationAudit): Router => {
 
       res.setHeader(
         'Content-Disposition',
-        `inline; filename="${clientDocumentName(stored).replace(/"/g, '')}"`
+        `inline; filename="${displayNameOf(stored).replace(/"/g, '')}"`
       );
       res.setHeader('X-Content-Type-Options', 'nosniff');
       streamDocument(opened, res, { orderId: id, documentId });

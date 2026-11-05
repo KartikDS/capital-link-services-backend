@@ -14,6 +14,7 @@ import { toDateOnly, toIso } from '../../shared/dates';
 import { toCents } from '../../shared/money';
 import { clean, fullName, maskEmail, truncate } from '../../shared/text';
 import { describeFile } from '../../middleware/upload';
+import { displayNameOf } from '../../shared/storage/documents';
 import {
   CLS_ORDER_STATUS,
   DOCUMENT_STATE,
@@ -516,7 +517,7 @@ export const toDocumentView = (
   note: ClsOrderDocumentNotes | null = null
 ) => ({
   id: String(document.id),
-  name: clean(document.document) ?? 'Document',
+  name: displayNameOf(clean(document.document)),
   reference,
   state: DOCUMENT_STATE[document.status ?? 0] ?? 'received',
   meta: describeFile(clean(document.document), null),
