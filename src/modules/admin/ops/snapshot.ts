@@ -4,6 +4,7 @@ import { hideArchivedSql } from '../orderArchive';
 import { toIso } from '../../../shared/dates';
 import { cached } from '../../../shared/ttlCache';
 import { clean } from '../../../shared/text';
+import { displayNameOf } from '../../../shared/storage/documents';
 import {
   DEFAULT_SLA,
   LIST_KEYS,
@@ -775,7 +776,7 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
       id: d.id,
       type: clean(d.type) ?? 'Document',
       qty: d.number && d.number > 0 ? d.number : 1,
-      file: clean(d.doc_file),
+      file: clean(d.doc_file) ? displayNameOf(clean(d.doc_file)) : null,
       verification:
         check?.status === 'ok' ? 'ok' : check?.status === 'issue' ? 'issue' : 'pending',
       ticks,
@@ -994,7 +995,7 @@ export const nextActionOf = (
       return {
         text: `Plan the route for ${k} document${plural(k)}`,
         act: 'route',
-        button: 'Apply suggested',
+        button: 'Review suggested route',
         waiting: false,
       };
     }

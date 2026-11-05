@@ -278,10 +278,31 @@ export const adminOpsPaths = merge([
     'When the last open item on a document clears, the document returns to "to verify".'
   ),
   entry(
+    `${P}/orders/{id}/route/suggestion`,
+    'get',
+    'Preview the suggested route',
+    'The legs the system would plan for each document without a route, with department and price. Saves nothing; the consultant reviews it before applying.'
+  ),
+  entry(
     `${P}/orders/{id}/route/apply`,
     'post',
     'Apply the suggested route',
-    'Plans legs for every document without one, once every document is verified and no item is open.'
+    'Plans legs for every document without one, once every document is verified and no item is open. An optional `docs` list carries the consultant\'s reviewed (adjusted) legs for a document, saved in place of the suggestion.',
+    {
+      body: body({ docs: { type: 'array', items: { type: 'object' } } }, []),
+    }
+  ),
+  entry(
+    `${P}/orders/{id}/route`,
+    'delete',
+    'Remove the planned route from the order',
+    'Removes the unsent legs of every document that has not started its route, in one step. Documents with a leg already sent or received are left as they are.'
+  ),
+  entry(
+    `${P}/orders/{id}/docs/{docId}/route`,
+    'delete',
+    'Remove a document route',
+    'Removes all of a document\'s legs in one step. Refused once any leg has been sent.'
   ),
   entry(
     `${P}/orders/{id}/docs/{docId}/route`,

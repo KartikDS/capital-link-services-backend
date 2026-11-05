@@ -23,6 +23,7 @@ import {
   serviceFor,
   uniqueCode,
   type ListKey,
+  type Pathway,
   returnChecksOf,
 } from '../../../domain/opsRules';
 import {
@@ -1224,12 +1225,24 @@ export const opsRoutes = (audit: Audit): Router => {
     return row ?? null;
   };
 
-  const applyRouteTo = async (
+  interface PlannedLeg {
+    departmentId: number;
+    shortName: string;
+    name: string;
+    type: string;
+    service: string;
+    price: number;
+  }
+
+  /**
+   * What the suggested route for one document would be. Writes nothing: the preview
+   * and the apply both start from here, so what the consultant reviews is what is
+   * saved unless they change it.
+   */
+  const planRouteFor = async (
     order: OrderOps,
-    doc: DocView,
-    me: number,
-    transaction: Transaction
-  ): Promise<string[]> => {
+    doc: DocView
+  ): Promise<{ legs: PlannedLeg[]; notes: string[]; pathway: string | null }> => {
     const notes: string[] = [];
     const input = {
       destination: order.destination,
@@ -1249,9 +1262,13 @@ export const opsRoutes = (audit: Audit): Router => {
       ? matchTemplate(await loadTemplates(), input, await loadLists())
       : null;
     if (!template || template.legs.length === 0) {
-      return [
-        `No route template matches ${doc.type} for ${order.destination ?? 'this destination'}. Add the legs by hand, or add a template in Routes, SLA & automation.`,
-      ];
+      return {
+        legs: [],
+        pathway: null,
+        notes: [
+          `No route template matches ${doc.type} for ${order.destination ?? 'this destination'}. Add the legs by hand, or add a template in Routes, SLA & automation.`,
+        ],
+      };
     }
 
     const legs: { dept: Dept | null; service: string; code: string; type: string }[] = [];
@@ -1275,7 +1292,7 @@ export const opsRoutes = (audit: Audit): Router => {
         type,
       });
     }
-    let seq = 1;
+    const planned: PlannedLeg[] = [];
     for (const leg of legs) {
       const dept = leg.dept;
       if (!dept) {
@@ -1286,6 +1303,27 @@ export const opsRoutes = (audit: Audit): Router => {
         );
         continue;
       }
+      planned.push({
+        departmentId: dept.id,
+        shortName: dept.short_name,
+        name: dept.name,
+        type: leg.type,
+        service: leg.service,
+        price: Number(dept.default_fee),
+      });
+    }
+    return { legs: planned, notes, pathway: template.pathway };
+  };
+
+  const saveLegs = async (
+    order: OrderOps,
+    doc: DocView,
+    legs: PlannedLeg[],
+    me: number,
+    transaction: Transaction
+  ): Promise<void> => {
+    let seq = 1;
+    for (const leg of legs) {
       const legId = await insert(
         `INSERT INTO tbl_ops_doc_leg (order_id, doc_id, seq, department_id, service_label, price, responsible_id, status, created_at, updated_at)
          VALUES (:o, :d, :seq, :dept, :svc, :price, :resp, 'todo', :at, :at)`,
@@ -1293,9 +1331,9 @@ export const opsRoutes = (audit: Audit): Router => {
           o: order.id,
           d: doc.id,
           seq: seq++,
-          dept: dept.id,
+          dept: leg.departmentId,
           svc: leg.service,
-          price: Number(dept.default_fee),
+          price: leg.price,
           resp: order.assigneeId ?? me,
           at: stamp(),
         },
@@ -1307,34 +1345,243 @@ export const opsRoutes = (audit: Audit): Router => {
         legId,
         'planned',
         me,
-        { detail: { department: dept.short_name, service: leg.service } },
+        { detail: { department: leg.shortName, service: leg.service } },
         transaction
       );
     }
-    return notes;
   };
 
-  router.post(
-    '/orders/:id/route/apply',
+  /** The documents a suggested route would be planned for. */
+  const unroutedDocs = (order: OrderOps): DocView[] =>
+    order.docs.filter((d) => !d.skipped && d.legs.length === 0);
+
+  /**
+   * GET /orders/:id/route/suggestion — the route the system would plan for each
+   * document that has none, without saving anything. The consultant reviews it (and
+   * can change it) before confirming through POST /route/apply.
+   */
+  router.get(
+    '/orders/:id/route/suggestion',
     validate(z.object({ id: idParam }), 'params'),
     async (req, res) => {
       const { id } = validParams<{ id: number }>(req);
+      const order = await need(id);
+      notClosed(order);
+      readyToRoute(order);
+
+      const docs = [];
+      for (const doc of unroutedDocs(order)) {
+        const plan = await planRouteFor(order, doc);
+        docs.push({
+          docId: doc.id,
+          type: doc.type,
+          qty: doc.qty,
+          legs: plan.legs,
+          notes: plan.notes,
+        });
+      }
+      done(res, { docs });
+    }
+  );
+
+  /**
+   * POST /orders/:id/route/apply — plan legs for every document without a route.
+   *
+   * With no body the suggestion is saved as it stands. With `docs`, the consultant's
+   * reviewed version of the suggestion is saved instead for each document listed;
+   * documents not listed still get the suggestion.
+   */
+  router.post(
+    '/orders/:id/route/apply',
+    validate(z.object({ id: idParam }), 'params'),
+    validate(
+      z.object({
+        docs: z
+          .array(
+            z.object({
+              docId: bodyId,
+              legs: z
+                .array(
+                  z.object({
+                    departmentId: bodyId,
+                    price: z.coerce.number().min(0).max(99999).optional(),
+                  })
+                )
+                .min(1)
+                .max(8),
+            })
+          )
+          .max(50)
+          .optional(),
+      })
+    ),
+    async (req, res) => {
+      const { id } = validParams<{ id: number }>(req);
       const me = currentUserId(req);
+      const { docs: reviewed = [] } = req.body as {
+        docs?: { docId: number; legs: { departmentId: number; price?: number }[] }[];
+      };
       const order = await need(id);
       notClosed(order);
       needClaimed(order);
       readyToRoute(order);
 
+      const targets = unroutedDocs(order);
+      for (const r of reviewed) {
+        if (!targets.some((d) => d.id === r.docId))
+          throw conflict(
+            'One of those documents already has a route. Reload the order and review the suggestion again.'
+          );
+      }
+
+      const ids = [...new Set(reviewed.flatMap((r) => r.legs.map((l) => l.departmentId)))];
+      const depts = ids.length
+        ? await sql<{
+            id: number;
+            short_name: string;
+            name: string;
+            type: string;
+            default_fee: string;
+            is_active: number;
+          }>(
+            `SELECT id, short_name, name, type, default_fee, is_active FROM tbl_ops_department WHERE id IN (:ids)`,
+            { ids }
+          )
+        : [];
+      for (const d of ids) {
+        if (depts.find((x) => x.id === d)?.is_active !== 1)
+          throw badRequest('One of those departments is not available.');
+      }
+
       const notes: string[] = [];
-      await sequelize.transaction(async (t) => {
-        for (const doc of order.docs.filter((d) => !d.skipped && d.legs.length === 0)) {
-          notes.push(...(await applyRouteTo(order, doc, me, t)));
+      const plans = new Map<number, PlannedLeg[]>();
+      for (const doc of targets) {
+        const plan = await planRouteFor(order, doc);
+        const mine = reviewed.find((r) => r.docId === doc.id);
+        if (!mine) {
+          notes.push(...plan.notes);
+          plans.set(doc.id, plan.legs);
+          continue;
         }
-        await activity(id, 'route', 'Suggested route applied', me, t);
+        plans.set(
+          doc.id,
+          mine.legs.map((l) => {
+            const d = depts.find((x) => x.id === l.departmentId)!;
+            return {
+              departmentId: d.id,
+              shortName: d.short_name,
+              name: d.name,
+              type: d.type,
+              service: serviceFor(d.type, plan.pathway as Pathway),
+              price: l.price ?? Number(d.default_fee),
+            };
+          })
+        );
+      }
+
+      await sequelize.transaction(async (t) => {
+        for (const doc of targets) await saveLegs(order, doc, plans.get(doc.id) ?? [], me, t);
+        await activity(
+          id,
+          'route',
+          reviewed.length ? 'Suggested route applied after review' : 'Suggested route applied',
+          me,
+          t
+        );
       });
-      await audit(req, 'ops.route.apply', { orderId: id });
+      await audit(req, 'ops.route.apply', { orderId: id, reviewed: reviewed.length });
       done(res, { notes, ...(await orderPayload(id, me)) });
     }
+  );
+
+  /**
+   * DELETE /orders/:id/route — take the planned route off every document that has
+   * not started it, in one step. A document with a leg already sent or received is
+   * left alone: that has happened, and is undone with "Undo last sign-off".
+   * DELETE /orders/:id/docs/:docId/route does the same for one document.
+   */
+  const clearRoutes = async (
+    req: Request,
+    res: Response,
+    docId: number | null
+  ): Promise<void> => {
+    const { id } = validParams<{ id: number }>(req);
+    const me = currentUserId(req);
+    const order = await need(id);
+    notClosed(order);
+    needClaimed(order);
+
+    const scope = docId === null ? order.docs : [docOf(order, docId)];
+    const planned = scope.filter((d) => d.legs.length > 0);
+    const clearable = planned.filter((d) => d.legs.every((l) => l.status === 'todo'));
+    if (clearable.length === 0) {
+      throw conflict(
+        planned.length === 0
+          ? 'There is no route to remove.'
+          : 'A leg has already been sent, so the route can no longer be removed. Undo the last sign-off first.'
+      );
+    }
+
+    await sequelize.transaction(async (t) => {
+      for (const doc of clearable) {
+        // The rows are checked again here: a leg sent a moment ago is not in the
+        // snapshot this handler loaded.
+        const [row] = await sequelize.query<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM tbl_ops_doc_leg WHERE doc_id = :docId AND status <> 'todo' FOR UPDATE`,
+          { type: QueryTypes.SELECT, replacements: { docId: doc.id }, transaction: t }
+        );
+        if (Number(row?.n ?? 0) > 0)
+          throw conflict(
+            `${doc.type} has just been sent, so its route can no longer be removed.`
+          );
+        await exec(
+          `DELETE FROM tbl_ops_doc_leg WHERE doc_id = :docId AND status = 'todo'`,
+          { docId: doc.id },
+          t
+        );
+        await event(
+          id,
+          doc.id,
+          null,
+          'removed',
+          me,
+          { detail: { route: doc.legs.map((l) => l.department).join(' → ') } },
+          t
+        );
+      }
+      await activity(
+        id,
+        'route',
+        `Route removed from ${clearable.map((d) => d.type).join(', ')}`,
+        me,
+        t
+      );
+    });
+    await audit(req, 'ops.route.clear', { orderId: id, docIds: clearable.map((d) => d.id) });
+
+    const kept = planned.length - clearable.length;
+    done(res, {
+      removed: clearable.length,
+      notes: kept
+        ? [
+            `${kept} document${kept === 1 ? ' has' : 's have'} already started its route and was left as it is.`,
+          ]
+        : [],
+      ...(await orderPayload(id, me)),
+    });
+  };
+
+  router.delete(
+    '/orders/:id/route',
+    validate(z.object({ id: idParam }), 'params'),
+    (req, res) => clearRoutes(req, res, null)
+  );
+
+  router.delete(
+    '/orders/:id/docs/:docId/route',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    (req, res) =>
+      clearRoutes(req, res, validParams<{ id: number; docId: number }>(req).docId)
   );
 
   router.put(
