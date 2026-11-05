@@ -5,6 +5,7 @@ import { toIso } from '../../../shared/dates';
 import { cached } from '../../../shared/ttlCache';
 import { clean } from '../../../shared/text';
 import { displayNameOf } from '../../../shared/storage/documents';
+import { ORDER_TYPE } from '../../../domain/codes';
 import {
   DEFAULT_SLA,
   LIST_KEYS,
@@ -414,6 +415,8 @@ export interface OrderOps {
   email: string | null;
   destination: string | null;
   destinationCode: string | null;
+  /** Which kind of order this is: both run through the same document route. */
+  service: 'legalisation' | 'visa';
   documentType: 'commercial' | 'personal' | null;
   receivedAt: string | null;
   assigneeId: number | null;
@@ -484,6 +487,7 @@ interface OrderRow {
   addr_ok: number | null;
   dest: string | null;
   dest_code: string | null;
+  otype: number;
   dtype: number | null;
   closed_a: string | null;
   closed_b: string | null;
@@ -491,7 +495,7 @@ interface OrderRow {
 }
 
 export interface SnapshotOptions {
-  /** Restrict to these orders (any order type; non-legalisation ids are ignored). */
+  /** Restrict to these orders (any order type; ids that are not legalisation or Public visa orders are ignored). */
   ids?: number[];
   /** Include orders already returned to the client. Default: open orders only. */
   includeClosed?: boolean;
@@ -515,7 +519,7 @@ const claimedClause = (claimedOnly: boolean | undefined): string =>
     : '';
 
 /**
- * Document legalisation orders that have been placed, with their Ops state.
+ * Document legalisation and Public visa orders that have been placed, with their Ops state.
  *
  * "Placed" means `date_submitted` is set — the same line the legacy dashboard
  * draws between an order in the client's hands and one CLS has to work.
@@ -545,11 +549,11 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
   const base = `
     SELECT o.id, o.contact_first_name AS fn, o.contact_last_name AS ln, o.contact_email AS email,
            o.visa_cls_team_member AS assignee, o.date_submitted AS submitted,
-           o.payment_status AS pay, o.is_address_confirmed AS addr_ok,
+           o.payment_status AS pay, o.is_address_confirmed AS addr_ok, o.order_type AS otype,
            c.country_name AS dest, c.country_code AS dest_code
       FROM tbl_cls_order o
       LEFT JOIN tbl_countries c ON c.id = o.destination
-     WHERE o.order_type = 9 AND o.date_submitted IS NOT NULL ${idsClause(opts.ids)} ${claimedClause(opts.claimedOnly)}${archivedClause}`;
+     WHERE o.order_type IN (${ORDER_TYPE.DOCUMENT_LEGALISATION}, ${ORDER_TYPE.PUBLIC_VISA}) AND o.date_submitted IS NOT NULL ${idsClause(opts.ids)} ${claimedClause(opts.claimedOnly)}${archivedClause}`;
 
   const baseRows = await sql<
     Omit<OrderRow, 'dtype' | 'closed_a' | 'closed_b' | 'company'>
@@ -693,10 +697,18 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
         { ids: orderIds }
       ),
       // The first destination's closed date, as the old subquery's `ORDER BY id LIMIT 1`.
-      sql<{ order_id: number; closed: string | null }>(
-        `SELECT order_id, visa_date_order_on_route_and_closed AS closed
-         FROM tbl_cls_order_destinations
-        WHERE order_id IN (:ids) ORDER BY id`,
+      // Also the country: a Public visa order keeps its destinations here, not on the order.
+      sql<{
+        order_id: number;
+        closed: string | null;
+        country_name: string | null;
+        country_code: string | null;
+      }>(
+        `SELECT d.order_id, d.visa_date_order_on_route_and_closed AS closed,
+              c.country_name, c.country_code
+         FROM tbl_cls_order_destinations d
+         LEFT JOIN tbl_countries c ON c.id = d.country_id
+        WHERE d.order_id IN (:ids) ORDER BY d.id`,
         { ids: orderIds }
       ),
     ]);
@@ -811,14 +823,23 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
 
   const aggByOrder = new Map(detailAgg.map((d) => [d.order_id, d]));
   const firstClosedByOrder = new Map<number, string | null>();
+  const firstCountryByOrder = new Map<number, { name: string | null; code: string | null }>();
   for (const d of firstDest) {
-    if (!firstClosedByOrder.has(d.order_id)) firstClosedByOrder.set(d.order_id, d.closed);
+    if (firstClosedByOrder.has(d.order_id)) continue;
+    firstClosedByOrder.set(d.order_id, d.closed);
+    firstCountryByOrder.set(d.order_id, { name: d.country_name, code: d.country_code });
   }
   for (const r of raw) {
     const agg = aggByOrder.get(r.id);
     r.dtype = agg?.dtype ?? null;
     r.closed_a = agg?.closed_a ?? null;
     r.closed_b = firstClosedByOrder.get(r.id) ?? null;
+    // A visa order has no country of its own: routes follow its first destination.
+    if (r.dest === null) {
+      const first = firstCountryByOrder.get(r.id);
+      r.dest = first?.name ?? null;
+      r.dest_code = first?.code ?? null;
+    }
     // The first return-details row by id: the same row the old subquery took.
     r.company = addressByOrder.get(r.id)?.company ?? null;
   }
@@ -877,6 +898,7 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
       email: clean(r.email),
       destination: clean(r.dest),
       destinationCode: clean(r.dest_code),
+      service: r.otype === ORDER_TYPE.PUBLIC_VISA ? 'visa' : 'legalisation',
       documentType: r.dtype === 1 ? 'commercial' : r.dtype === 2 ? 'personal' : null,
       receivedAt: toIso(r.submitted),
       assigneeId: r.assignee || null,

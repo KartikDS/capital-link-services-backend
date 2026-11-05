@@ -125,7 +125,7 @@ export const opsRoutes = (audit: Audit): Router => {
 
   const need = async (id: number): Promise<OrderOps> => {
     const order = await loadOrder(id);
-    if (!order) throw notFound('We could not find that document legalisation order.');
+    if (!order) throw notFound('We could not find that order.');
     return order;
   };
 
@@ -2404,6 +2404,7 @@ export const opsRoutes = (audit: Audit): Router => {
           client: order.client,
           destination: order.destination,
           destinationCode: order.destinationCode,
+          service: order.service,
           state: s,
           currentDepartment: leg?.department ?? null,
           currentDepartmentId: leg?.departmentId ?? null,
