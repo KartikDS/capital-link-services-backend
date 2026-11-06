@@ -504,7 +504,9 @@ export interface SnapshotOptions {
   /**
    * Only orders a consultant has claimed in the Ops flow, that is, those with a
    * `tbl_ops_order_state` row. Orders worked entirely in the old system never get
-   * one, so this keeps them out.
+   * one, so this keeps them out. An order that already has a route planned counts
+   * too: it was assigned through the order screen's own team-member control, which
+   * sets the consultant without writing a claim row.
    */
   claimedOnly?: boolean;
   limit?: number;
@@ -515,7 +517,8 @@ const idsClause = (ids: number[] | undefined): string =>
 
 const claimedClause = (claimedOnly: boolean | undefined): string =>
   claimedOnly
-    ? 'AND o.id IN (SELECT s.order_id FROM tbl_ops_order_state s WHERE s.claimed_by IS NOT NULL)'
+    ? `AND (o.id IN (SELECT s.order_id FROM tbl_ops_order_state s WHERE s.claimed_by IS NOT NULL)
+         OR o.id IN (SELECT l.order_id FROM tbl_ops_doc_leg l))`
     : '';
 
 /**
