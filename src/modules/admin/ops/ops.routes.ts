@@ -30,6 +30,7 @@ import {
   AUTOMATION_KEYS,
   configAvailable,
   currentLegsOf,
+  docArchiveAvailable,
   loadChecks,
   loadDeptTypes,
   loadLists,
@@ -43,6 +44,7 @@ import {
   sql,
   skipsAvailable,
   templatesAvailable,
+  type ArchivedDocView,
   type DocView,
   type LegView,
   type OrderOps,
@@ -1078,7 +1080,9 @@ export const opsRoutes = (audit: Audit): Router => {
           { type: QueryTypes.SELECT, replacements: { docId }, transaction: t }
         );
         if (Number(row?.n ?? 0) > 0)
-          throw conflict('This document has just been sent, so it can no longer be removed.');
+          throw conflict(
+            'This document has just been sent, so it can no longer be removed.'
+          );
         for (const table of [
           'tbl_ops_doc_leg',
           'tbl_ops_doc_check',
@@ -1095,6 +1099,129 @@ export const opsRoutes = (audit: Audit): Router => {
       });
       await activity(id, 'note', `Document removed: ${doc.qty} × ${doc.type}`, me);
       await audit(req, 'ops.doc.remove', { orderId: id, docId, type: doc.type });
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  // Rename a document or change its quantity. Allowed whatever its route, because a
+  // document is often routed before staff notice it is incomplete; blocked once it is
+  // verified, since the checks were made against what it was.
+  router.patch(
+    '/orders/:id/docs/:docId',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    validate(
+      z.object({
+        type: z.string().trim().min(2).max(200),
+        qty: z.coerce.number().int().min(1).max(999),
+      })
+    ),
+    async (req, res) => {
+      const { id, docId } = validParams<{ id: number; docId: number }>(req);
+      const me = currentUserId(req);
+      const { type, qty } = req.body as { type: string; qty: number };
+      const order = await need(id);
+      notClosed(order);
+      needClaimed(order);
+      const doc = docOf(order, docId);
+      if (doc.verification === 'ok')
+        throw conflict(
+          'This document is already verified, so it can no longer be edited.'
+        );
+      if (doc.type === type && doc.qty === qty)
+        return done(res, await orderPayload(id, me));
+
+      await exec(
+        `UPDATE tbl_order_dl_checklist SET type = :type, number = :qty WHERE id = :docId AND order_no = :id`,
+        { type, qty, docId, id }
+      );
+      await activity(
+        id,
+        'note',
+        `Document edited: ${doc.qty} × ${doc.type} is now ${qty} × ${type}`,
+        me
+      );
+      await audit(req, 'ops.doc.edit', {
+        orderId: id,
+        docId,
+        from: { type: doc.type, qty: doc.qty },
+        to: { type, qty },
+      });
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  // Delete from the hub. Nothing is deleted: the document is flagged archived and
+  // listed under the hub's Deleted tab, where it can be restored. Unlike the hard
+  // remove above this is allowed after the document has been sent, which is the case
+  // it exists for (added to the wrong order, then routed).
+  const archiveGate = async (): Promise<void> => {
+    if (!(await docArchiveAvailable()))
+      throw serviceUnavailable(
+        'Deleting documents is not switched on for this database yet. Ask the DBA to apply db/migrations/2026-11-17-ops-doc-archive.sql.'
+      );
+  };
+
+  router.post(
+    '/orders/:id/docs/:docId/archive',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    validate(z.object({ reason: z.string().trim().max(500).optional() })),
+    async (req, res) => {
+      await archiveGate();
+      const { id, docId } = validParams<{ id: number; docId: number }>(req);
+      const me = currentUserId(req);
+      const reason = (req.body as { reason?: string }).reason || null;
+      const order = await need(id);
+      notClosed(order);
+      needClaimed(order);
+      const doc = docOf(order, docId);
+      const staff = await loadStaff();
+      const name = staff.names.get(me) ?? null;
+      const at = stamp();
+
+      await exec(
+        `INSERT INTO tbl_ops_doc_archive
+           (doc_id, order_id, is_archived, archived_at, archived_by, archived_by_name, archive_reason,
+            unarchived_at, unarchived_by, unarchived_by_name)
+         VALUES (:docId, :id, 1, :at, :me, :name, :reason, NULL, NULL, NULL)
+         ON DUPLICATE KEY UPDATE is_archived = 1, archived_at = VALUES(archived_at),
+           archived_by = VALUES(archived_by), archived_by_name = VALUES(archived_by_name),
+           archive_reason = VALUES(archive_reason), unarchived_at = NULL,
+           unarchived_by = NULL, unarchived_by_name = NULL`,
+        { docId, id, at, me, name, reason }
+      );
+      const atDept = doc.legs.some((l) => l.status === 'out');
+      await activity(
+        id,
+        'note',
+        `Document deleted: ${doc.qty} × ${doc.type}${atDept ? ' (it was at a department)' : ''}${reason ? ` — ${reason}` : ''}`,
+        me
+      );
+      await audit(req, 'ops.doc.archive', { orderId: id, docId, type: doc.type, reason });
+      done(res, await orderPayload(id, me));
+    }
+  );
+
+  router.post(
+    '/orders/:id/docs/:docId/restore',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    async (req, res) => {
+      await archiveGate();
+      const { id, docId } = validParams<{ id: number; docId: number }>(req);
+      const me = currentUserId(req);
+      const order = await need(id);
+      notClosed(order);
+      const doc = order.archivedDocs.find((d) => d.id === docId);
+      if (!doc) throw notFound('That document is not in the deleted list.');
+      const staff = await loadStaff();
+
+      await exec(
+        `UPDATE tbl_ops_doc_archive SET is_archived = 0, unarchived_at = :at,
+           unarchived_by = :me, unarchived_by_name = :name
+         WHERE doc_id = :docId AND order_id = :id`,
+        { at: stamp(), me, name: staff.names.get(me) ?? null, docId, id }
+      );
+      await activity(id, 'note', `Document restored: ${doc.qty} × ${doc.type}`, me);
+      await audit(req, 'ops.doc.restore', { orderId: id, docId, type: doc.type });
       done(res, await orderPayload(id, me));
     }
   );
@@ -1479,7 +1606,9 @@ export const opsRoutes = (audit: Audit): Router => {
           );
       }
 
-      const ids = [...new Set(reviewed.flatMap((r) => r.legs.map((l) => l.departmentId)))];
+      const ids = [
+        ...new Set(reviewed.flatMap((r) => r.legs.map((l) => l.departmentId))),
+      ];
       const depts = ids.length
         ? await sql<{
             id: number;
@@ -1525,11 +1654,14 @@ export const opsRoutes = (audit: Audit): Router => {
       }
 
       await sequelize.transaction(async (t) => {
-        for (const doc of targets) await saveLegs(order, doc, plans.get(doc.id) ?? [], me, t);
+        for (const doc of targets)
+          await saveLegs(order, doc, plans.get(doc.id) ?? [], me, t);
         await activity(
           id,
           'route',
-          reviewed.length ? 'Suggested route applied after review' : 'Suggested route applied',
+          reviewed.length
+            ? 'Suggested route applied after review'
+            : 'Suggested route applied',
           me,
           t
         );
@@ -1602,7 +1734,10 @@ export const opsRoutes = (audit: Audit): Router => {
         t
       );
     });
-    await audit(req, 'ops.route.clear', { orderId: id, docIds: clearable.map((d) => d.id) });
+    await audit(req, 'ops.route.clear', {
+      orderId: id,
+      docIds: clearable.map((d) => d.id),
+    });
 
     const kept = planned.length - clearable.length;
     done(res, {
@@ -2401,7 +2536,8 @@ export const opsRoutes = (audit: Audit): Router => {
   // Document Hub
   // -------------------------------------------------------------------------
 
-  type HubState = 'intake' | 'unplanned' | 'tosend' | 'out' | 'complete' | 'returned';
+  type HubState =
+    'intake' | 'unplanned' | 'tosend' | 'out' | 'complete' | 'returned' | 'deleted';
 
   const hubStateOf = (order: OrderOps, doc: DocView): HubState => {
     if (order.stage === 'done') return 'returned';
@@ -2424,57 +2560,73 @@ export const opsRoutes = (audit: Audit): Router => {
       claimedOnly: true,
     });
 
-    const all = orders.flatMap((order) =>
-      order.docs.map((doc) => {
-        const s = hubStateOf(order, doc);
-        const leg = doc.legs[doc.currentLeg] ?? null;
-        const since =
-          s === 'out'
-            ? leg?.sentAt
-            : s === 'complete'
-              ? doc.legs[doc.legs.length - 1]?.receivedAt
-              : s === 'tosend' && doc.currentLeg > 0
-                ? doc.legs[doc.currentLeg - 1]?.receivedAt
-                : (doc.verifiedAt ?? order.receivedAt);
-        const outMs =
-          s === 'out' && leg?.sentAt ? Date.now() - Date.parse(leg.sentAt) : null;
-        const tatMs = leg ? leg.tatDays * 86_400_000 : null;
+    const hubRow = (
+      order: OrderOps,
+      doc: DocView,
+      archive: ArchivedDocView['archive'] | null
+    ) => {
+      const s: HubState = archive ? 'deleted' : hubStateOf(order, doc);
+      const leg = doc.legs[doc.currentLeg] ?? null;
+      const since =
+        s === 'out'
+          ? leg?.sentAt
+          : s === 'complete'
+            ? doc.legs[doc.legs.length - 1]?.receivedAt
+            : s === 'tosend' && doc.currentLeg > 0
+              ? doc.legs[doc.currentLeg - 1]?.receivedAt
+              : (doc.verifiedAt ?? order.receivedAt);
+      const outMs =
+        s === 'out' && leg?.sentAt ? Date.now() - Date.parse(leg.sentAt) : null;
+      const tatMs = leg ? leg.tatDays * 86_400_000 : null;
 
-        return {
-          orderId: order.id,
-          docId: doc.id,
-          type: doc.type,
-          qty: doc.qty,
-          code: `DOC-${String(order.id).slice(-4)}-${doc.id}`,
-          client: order.client,
-          destination: order.destination,
-          destinationCode: order.destinationCode,
-          service: order.service,
-          state: s,
-          currentDepartment: leg?.department ?? null,
-          currentDepartmentId: leg?.departmentId ?? null,
-          currentDepartmentType: leg?.departmentType ?? null,
-          currentDepartmentName: leg?.departmentName ?? null,
-          assigneeId: order.assigneeId,
-          price: leg?.price ?? null,
-          sentAt: leg?.sentAt ?? null,
-          legIndex: doc.currentLeg,
-          skipped: doc.skipped,
-          legId: leg?.id ?? null,
-          route: doc.legs.map((l, i) => ({
-            id: l.id,
-            department: l.department,
-            type: l.departmentType,
-            status: l.status,
-            current: i === doc.currentLeg,
-          })),
-          since: since ?? order.receivedAt,
-          late: outMs !== null && tatMs !== null && outMs > tatMs,
-          responsibleId: leg?.responsibleId ?? order.assigneeId,
-          responsible: leg?.responsible ?? order.assignee,
-          canSign: false,
-        };
-      })
+      return {
+        orderId: order.id,
+        docId: doc.id,
+        type: doc.type,
+        qty: doc.qty,
+        code: `DOC-${String(order.id).slice(-4)}-${doc.id}`,
+        client: order.client,
+        destination: order.destination,
+        destinationCode: order.destinationCode,
+        service: order.service,
+        state: s,
+        currentDepartment: leg?.department ?? null,
+        currentDepartmentId: leg?.departmentId ?? null,
+        currentDepartmentType: leg?.departmentType ?? null,
+        currentDepartmentName: leg?.departmentName ?? null,
+        assigneeId: order.assigneeId,
+        price: leg?.price ?? null,
+        sentAt: leg?.sentAt ?? null,
+        legIndex: doc.currentLeg,
+        skipped: doc.skipped,
+        legId: leg?.id ?? null,
+        route: doc.legs.map((l, i) => ({
+          id: l.id,
+          department: l.department,
+          type: l.departmentType,
+          status: l.status,
+          current: i === doc.currentLeg,
+        })),
+        since: since ?? order.receivedAt,
+        late: outMs !== null && tatMs !== null && outMs > tatMs,
+        responsibleId: leg?.responsibleId ?? order.assigneeId,
+        responsible: leg?.responsible ?? order.assignee,
+        canSign: false,
+        // Edit is open until the document is verified, whatever its route; delete
+        // (archive) is open on any order still in progress.
+        editable: !archive && doc.verification !== 'ok' && order.stage !== 'done',
+        deletable: !archive && order.stage !== 'done',
+        deletedAt: archive?.at ?? null,
+        deletedBy: archive?.by ?? null,
+        deletedReason: archive?.reason ?? null,
+      };
+    };
+
+    const all = orders.flatMap((order) =>
+      order.docs.map((doc) => hubRow(order, doc, null))
+    );
+    const deleted = orders.flatMap((order) =>
+      order.archivedDocs.map((doc) => hubRow(order, doc, doc.archive))
     );
 
     const counts = {
@@ -2485,15 +2637,16 @@ export const opsRoutes = (audit: Audit): Router => {
       out: 0,
       complete: 0,
       returned: 0,
+      deleted: deleted.length,
     };
     for (const r of all) counts[r.state] += 1;
 
     const needle = (q.q ?? '').trim().toLowerCase();
-    const rows = all
+    const rows = (state === 'deleted' ? deleted : all)
       .filter((r) =>
         state === '' || state === 'live'
           ? r.state !== 'returned'
-          : state === 'all'
+          : state === 'all' || state === 'deleted'
             ? true
             : r.state === state
       )
@@ -2505,7 +2658,11 @@ export const opsRoutes = (audit: Audit): Router => {
           !needle ||
           `${r.type} ${r.orderId} ${r.client} ${r.code}`.toLowerCase().includes(needle)
       )
-      .sort((a, b) => (a.since ?? '').localeCompare(b.since ?? ''));
+      .sort((a, b) =>
+        state === 'deleted'
+          ? (b.deletedAt ?? '').localeCompare(a.deletedAt ?? '')
+          : (a.since ?? '').localeCompare(b.since ?? '')
+      );
 
     const [departments, staff] = await Promise.all([
       sql<{ id: number; short_name: string; name: string }>(

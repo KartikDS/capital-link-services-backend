@@ -160,6 +160,10 @@ export const proofsAvailable = (): Promise<boolean> =>
 /** True once the table of documents that need no legalisation exists. */
 export const skipsAvailable = (): Promise<boolean> => tablesExist(['tbl_ops_doc_skip']);
 
+/** True once the table of archived (deleted) documents exists. */
+export const docArchiveAvailable = (): Promise<boolean> =>
+  tablesExist(['tbl_ops_doc_archive']);
+
 /** True once the rule tables (checks, department types, checklists, lists) exist. */
 export const configAvailable = (): Promise<boolean> =>
   tablesExist([
@@ -362,6 +366,15 @@ export interface DocView {
   currentLeg: number;
 }
 
+/** A document taken out of the working lists. Nothing of it is deleted; see `tbl_ops_doc_archive`. */
+export interface ArchivedDocView extends DocView {
+  archive: {
+    at: string | null;
+    by: string | null;
+    reason: string | null;
+  };
+}
+
 export interface PendingView {
   id: number;
   docId: number | null;
@@ -433,6 +446,8 @@ export interface OrderOps {
   sla: (SlaClock & { dueAtIso: string }) | null;
   next: NextAction;
   docs: DocView[];
+  /** Documents staff deleted from the hub. Not part of `docs`, so they never hold the order back. */
+  archivedDocs: ArchivedDocView[];
   items: PendingView[];
 }
 
@@ -577,146 +592,171 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
   if (raw.length === 0) return [];
   const orderIds = raw.map((r) => r.id);
 
-  const [docs, checks, legs, items, states, skips, addresses, detailAgg, firstDest] =
-    await Promise.all([
-      sql<{
-        id: number;
-        order_no: number;
-        type: string | null;
-        number: number | null;
-        doc_file: string | null;
-      }>(
-        `SELECT id, order_no, type, number, doc_file FROM tbl_order_dl_checklist
+  const [
+    docs,
+    checks,
+    legs,
+    items,
+    states,
+    skips,
+    addresses,
+    detailAgg,
+    firstDest,
+    archived,
+  ] = await Promise.all([
+    sql<{
+      id: number;
+      order_no: number;
+      type: string | null;
+      number: number | null;
+      doc_file: string | null;
+    }>(
+      `SELECT id, order_no, type, number, doc_file FROM tbl_order_dl_checklist
         WHERE order_no IN (:ids) ORDER BY id`,
-        { ids: orderIds }
-      ),
-      sql<{
-        doc_id: number;
-        status: string;
-        ticks: string | null;
-        verified_by: number | null;
-        verified_at: string | null;
-      }>(
-        `SELECT doc_id, status, ticks, verified_by, verified_at FROM tbl_ops_doc_check
+      { ids: orderIds }
+    ),
+    sql<{
+      doc_id: number;
+      status: string;
+      ticks: string | null;
+      verified_by: number | null;
+      verified_at: string | null;
+    }>(
+      `SELECT doc_id, status, ticks, verified_by, verified_at FROM tbl_ops_doc_check
         WHERE order_id IN (:ids)`,
-        { ids: orderIds }
-      ),
-      sql<{
-        id: number;
-        order_id: number;
-        doc_id: number;
-        seq: number;
-        department_id: number;
-        service_label: string | null;
-        price: string;
-        responsible_id: number | null;
-        status: string;
-        sent_at: string | null;
-        sent_by: number | null;
-        sent_exception: string | null;
-        sent_ref: string | null;
-        received_at: string | null;
-        received_by: number | null;
-        received_exception: string | null;
-        code: string;
-        dname: string;
-        dshort: string;
-        dtype: string;
-        tat_days: number;
-      }>(
-        `SELECT l.id, l.order_id, l.doc_id, l.seq, l.department_id, l.service_label, l.price,
+      { ids: orderIds }
+    ),
+    sql<{
+      id: number;
+      order_id: number;
+      doc_id: number;
+      seq: number;
+      department_id: number;
+      service_label: string | null;
+      price: string;
+      responsible_id: number | null;
+      status: string;
+      sent_at: string | null;
+      sent_by: number | null;
+      sent_exception: string | null;
+      sent_ref: string | null;
+      received_at: string | null;
+      received_by: number | null;
+      received_exception: string | null;
+      code: string;
+      dname: string;
+      dshort: string;
+      dtype: string;
+      tat_days: number;
+    }>(
+      `SELECT l.id, l.order_id, l.doc_id, l.seq, l.department_id, l.service_label, l.price,
               l.responsible_id, l.status, l.sent_at, l.sent_by, l.sent_exception, l.sent_ref,
               l.received_at, l.received_by, l.received_exception,
               d.code, d.name AS dname, d.short_name AS dshort, d.type AS dtype, d.tat_days
          FROM tbl_ops_doc_leg l JOIN tbl_ops_department d ON d.id = l.department_id
         WHERE l.order_id IN (:ids) ORDER BY l.doc_id, l.seq, l.id`,
-        { ids: orderIds }
-      ),
-      sql<{
-        id: number;
-        order_id: number;
-        doc_id: number | null;
-        text: string;
-        owner: string;
-        who: string | null;
-        raised_by: number | null;
-        raised_at: string | null;
-        due_at: string | null;
-        reminders: number;
-        resolved_at: string | null;
-      }>(
-        `SELECT id, order_id, doc_id, text, owner, who, raised_by, raised_at, due_at, reminders, resolved_at
+      { ids: orderIds }
+    ),
+    sql<{
+      id: number;
+      order_id: number;
+      doc_id: number | null;
+      text: string;
+      owner: string;
+      who: string | null;
+      raised_by: number | null;
+      raised_at: string | null;
+      due_at: string | null;
+      reminders: number;
+      resolved_at: string | null;
+    }>(
+      `SELECT id, order_id, doc_id, text, owner, who, raised_by, raised_at, due_at, reminders, resolved_at
          FROM tbl_ops_pending_item WHERE order_id IN (:ids) ORDER BY id`,
-        { ids: orderIds }
-      ),
-      sql<{
-        order_id: number;
-        claimed_by: number | null;
-        claimed_at: string | null;
-        return_method: string | null;
-        returned_at: string | null;
-      }>(
-        `SELECT order_id, claimed_by, claimed_at, return_method, returned_at
+      { ids: orderIds }
+    ),
+    sql<{
+      order_id: number;
+      claimed_by: number | null;
+      claimed_at: string | null;
+      return_method: string | null;
+      returned_at: string | null;
+    }>(
+      `SELECT order_id, claimed_by, claimed_at, return_method, returned_at
          FROM tbl_ops_order_state WHERE order_id IN (:ids)`,
-        { ids: orderIds }
-      ),
-      skipsAvailable().then((on) =>
-        on
-          ? sql<{ doc_id: number }>(
-              `SELECT doc_id FROM tbl_ops_doc_skip WHERE order_id IN (:ids)`,
-              { ids: orderIds }
-            )
-          : []
-      ),
-      sql<{
-        order_id: number;
-        first_name: string | null;
-        last_name: string | null;
-        email: string | null;
-        contact_number: string | null;
-        company: string | null;
-        address: string | null;
-        city: string | null;
-        state: string | null;
-        postcode: string | null;
-        country_id: number | null;
-        country_name: string | null;
-      }>(
-        `SELECT r.order_id, r.first_name, r.last_name, r.email, r.contact_number, r.company,
+      { ids: orderIds }
+    ),
+    skipsAvailable().then((on) =>
+      on
+        ? sql<{ doc_id: number }>(
+            `SELECT doc_id FROM tbl_ops_doc_skip WHERE order_id IN (:ids)`,
+            { ids: orderIds }
+          )
+        : []
+    ),
+    sql<{
+      order_id: number;
+      first_name: string | null;
+      last_name: string | null;
+      email: string | null;
+      contact_number: string | null;
+      company: string | null;
+      address: string | null;
+      city: string | null;
+      state: string | null;
+      postcode: string | null;
+      country_id: number | null;
+      country_name: string | null;
+    }>(
+      `SELECT r.order_id, r.first_name, r.last_name, r.email, r.contact_number, r.company,
               r.address, r.city, r.state, r.postcode, r.country_id, c.country_name
          FROM tbl_order_return_document_details r
          LEFT JOIN tbl_countries c ON c.id = r.country_id
         WHERE r.order_id IN (:ids) ORDER BY r.id`,
-        { ids: orderIds }
-      ),
-      // The document type and the "closed" date that used to be on the base query.
-      sql<{
-        order_id: number;
-        dtype: number | null;
-        closed_a: string | null;
-      }>(
-        `SELECT order_id, MAX(type_of_document) AS dtype,
+      { ids: orderIds }
+    ),
+    // The document type and the "closed" date that used to be on the base query.
+    sql<{
+      order_id: number;
+      dtype: number | null;
+      closed_a: string | null;
+    }>(
+      `SELECT order_id, MAX(type_of_document) AS dtype,
               MAX(date_order_on_route_and_closed) AS closed_a
          FROM tbl_document_legalization_order_details
         WHERE order_id IN (:ids) GROUP BY order_id`,
-        { ids: orderIds }
-      ),
-      // The first destination's closed date, as the old subquery's `ORDER BY id LIMIT 1`.
-      // Also the country: a Public visa order keeps its destinations here, not on the order.
-      sql<{
-        order_id: number;
-        closed: string | null;
-        country_name: string | null;
-        country_code: string | null;
-      }>(
-        `SELECT d.order_id, d.visa_date_order_on_route_and_closed AS closed,
+      { ids: orderIds }
+    ),
+    // The first destination's closed date, as the old subquery's `ORDER BY id LIMIT 1`.
+    // Also the country: a Public visa order keeps its destinations here, not on the order.
+    sql<{
+      order_id: number;
+      closed: string | null;
+      country_name: string | null;
+      country_code: string | null;
+    }>(
+      `SELECT d.order_id, d.visa_date_order_on_route_and_closed AS closed,
               c.country_name, c.country_code
          FROM tbl_cls_order_destinations d
          LEFT JOIN tbl_countries c ON c.id = d.country_id
         WHERE d.order_id IN (:ids) ORDER BY d.id`,
-        { ids: orderIds }
-      ),
-    ]);
+      { ids: orderIds }
+    ),
+    docArchiveAvailable().then((on) =>
+      on
+        ? sql<{
+            doc_id: number;
+            archived_at: string | null;
+            archived_by: number | null;
+            archived_by_name: string | null;
+            archive_reason: string | null;
+          }>(
+            `SELECT doc_id, archived_at, archived_by, archived_by_name, archive_reason
+                 FROM tbl_ops_doc_archive WHERE order_id IN (:ids) AND is_archived = 1`,
+            { ids: orderIds }
+          )
+        : []
+    ),
+  ]);
 
   // A visa order has no contact name of its own: name it as its own screen does,
   // by the client's account, then the primary traveller.
@@ -804,6 +844,8 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
   }
 
   const docsByOrder = new Map<number, DocView[]>();
+  const archivedByOrder = new Map<number, ArchivedDocView[]>();
+  const archivedByDoc = new Map(archived.map((a) => [a.doc_id, a]));
   for (const d of docs) {
     const check = checkByDoc.get(d.id);
     let ticks: Record<string, boolean> = {};
@@ -831,6 +873,20 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
       legs: docLegs,
       currentLeg: skipped.has(d.id) ? -1 : cur,
     };
+    const gone = archivedByDoc.get(d.id);
+    if (gone) {
+      const list = archivedByOrder.get(d.order_no) ?? [];
+      list.push({
+        ...view,
+        archive: {
+          at: toIso(gone.archived_at),
+          by: clean(gone.archived_by_name) ?? NAME_OF(staff.names, gone.archived_by),
+          reason: clean(gone.archive_reason),
+        },
+      });
+      archivedByOrder.set(d.order_no, list);
+      continue;
+    }
     const list = docsByOrder.get(d.order_no) ?? [];
     list.push(view);
     docsByOrder.set(d.order_no, list);
@@ -838,6 +894,8 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
 
   const itemsByOrder = new Map<number, PendingView[]>();
   for (const i of items) {
+    // An archived document's open items go with it, or they would hold the order back.
+    if (i.doc_id !== null && archivedByDoc.has(i.doc_id)) continue;
     const list = itemsByOrder.get(i.order_id) ?? [];
     list.push({
       id: i.id,
@@ -856,7 +914,10 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
 
   const aggByOrder = new Map(detailAgg.map((d) => [d.order_id, d]));
   const firstClosedByOrder = new Map<number, string | null>();
-  const firstCountryByOrder = new Map<number, { name: string | null; code: string | null }>();
+  const firstCountryByOrder = new Map<
+    number,
+    { name: string | null; code: string | null }
+  >();
   for (const d of firstDest) {
     if (firstClosedByOrder.has(d.order_id)) continue;
     firstClosedByOrder.set(d.order_id, d.closed);
@@ -950,6 +1011,7 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
       sla: clock ? { ...clock, dueAtIso: new Date(clock.dueAt).toISOString() } : null,
       next: { text: '', act: 'view', button: 'Open', waiting: true },
       docs: orderDocs,
+      archivedDocs: archivedByOrder.get(r.id) ?? [],
       items: orderItems,
     };
     order.next = nextActionOf(order, staff.names);

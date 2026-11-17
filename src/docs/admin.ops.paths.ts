@@ -254,6 +254,26 @@ export const adminOpsPaths = merge([
     { body: body({ type: f.string(), qty: f.int() }, ['type']) }
   ),
   entry(
+    `${P}/orders/{id}/docs/{docId}`,
+    'patch',
+    'Edit a document',
+    'Changes its name and quantity in `tbl_order_dl_checklist`. Allowed whatever the document\'s route, refused with 409 once it is verified or the order is returned.',
+    { body: body({ type: f.string(), qty: f.int() }, ['type', 'qty']) }
+  ),
+  entry(
+    `${P}/orders/{id}/docs/{docId}/archive`,
+    'post',
+    'Delete a document from the hub (archive it)',
+    'Nothing is deleted: the document is flagged in `tbl_ops_doc_archive`, hidden from the hub and the order, and listed under the hub\'s Deleted tab. Allowed after a leg has been sent. 503 until the migration is applied.',
+    { body: body({ reason: f.string('Why it is being deleted.') }) }
+  ),
+  entry(
+    `${P}/orders/{id}/docs/{docId}/restore`,
+    'post',
+    'Restore a deleted document',
+    'Clears the archive flag. The record of who deleted and who restored it is kept.'
+  ),
+  entry(
     `${P}/orders/{id}/pending`,
     'post',
     'Raise a pending item',
