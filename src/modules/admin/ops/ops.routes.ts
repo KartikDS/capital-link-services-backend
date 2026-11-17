@@ -1103,9 +1103,10 @@ export const opsRoutes = (audit: Audit): Router => {
     }
   );
 
-  // Rename a document or change its quantity. Allowed whatever its route, because a
-  // document is often routed before staff notice it is incomplete; blocked once it is
-  // verified, since the checks were made against what it was.
+  // Rename a document or change its quantity. Allowed whatever its route and whether
+  // or not it is verified, because a document is often verified or routed before staff
+  // notice it is incomplete; blocked once a leg has been sent, since from then on the
+  // paper trail is the record.
   router.patch(
     '/orders/:id/docs/:docId',
     validate(z.object({ id: idParam, docId: idParam }), 'params'),
@@ -1123,9 +1124,9 @@ export const opsRoutes = (audit: Audit): Router => {
       notClosed(order);
       needClaimed(order);
       const doc = docOf(order, docId);
-      if (doc.verification === 'ok')
+      if (doc.legs.some((l) => l.status !== 'todo'))
         throw conflict(
-          'This document is already verified, so it can no longer be edited.'
+          'This document has already been sent, so it can no longer be edited. Undo the last sign-off first.'
         );
       if (doc.type === type && doc.qty === qty)
         return done(res, await orderPayload(id, me));
@@ -2612,9 +2613,12 @@ export const opsRoutes = (audit: Audit): Router => {
         responsibleId: leg?.responsibleId ?? order.assigneeId,
         responsible: leg?.responsible ?? order.assignee,
         canSign: false,
-        // Edit is open until the document is verified, whatever its route; delete
-        // (archive) is open on any order still in progress.
-        editable: !archive && doc.verification !== 'ok' && order.stage !== 'done',
+        // Edit is open until a leg has been sent, verified or not; delete (archive)
+        // is open on any order still in progress.
+        editable:
+          !archive &&
+          doc.legs.every((l) => l.status === 'todo') &&
+          order.stage !== 'done',
         deletable: !archive && order.stage !== 'done',
         deletedAt: archive?.at ?? null,
         deletedBy: archive?.by ?? null,

@@ -257,14 +257,14 @@ export const adminOpsPaths = merge([
     `${P}/orders/{id}/docs/{docId}`,
     'patch',
     'Edit a document',
-    'Changes its name and quantity in `tbl_order_dl_checklist`. Allowed whatever the document\'s route, refused with 409 once it is verified or the order is returned.',
+    "Changes its name and quantity in `tbl_order_dl_checklist`. Allowed whatever the document's route, refused with 409 once a leg has been sent or the order is returned.",
     { body: body({ type: f.string(), qty: f.int() }, ['type', 'qty']) }
   ),
   entry(
     `${P}/orders/{id}/docs/{docId}/archive`,
     'post',
     'Delete a document from the hub (archive it)',
-    'Nothing is deleted: the document is flagged in `tbl_ops_doc_archive`, hidden from the hub and the order, and listed under the hub\'s Deleted tab. Allowed after a leg has been sent. 503 until the migration is applied.',
+    "Nothing is deleted: the document is flagged in `tbl_ops_doc_archive`, hidden from the hub and the order, and listed under the hub's Deleted tab. Allowed after a leg has been sent. 503 until the migration is applied.",
     { body: body({ reason: f.string('Why it is being deleted.') }) }
   ),
   entry(
@@ -307,7 +307,7 @@ export const adminOpsPaths = merge([
     `${P}/orders/{id}/route/apply`,
     'post',
     'Apply the suggested route',
-    'Plans legs for every document without one, once every document is verified and no item is open. An optional `docs` list carries the consultant\'s reviewed (adjusted) legs for a document, saved in place of the suggestion.',
+    "Plans legs for every document without one, once every document is verified and no item is open. An optional `docs` list carries the consultant's reviewed (adjusted) legs for a document, saved in place of the suggestion.",
     {
       body: body({ docs: { type: 'array', items: { type: 'object' } } }, []),
     }
@@ -322,7 +322,7 @@ export const adminOpsPaths = merge([
     `${P}/orders/{id}/docs/{docId}/route`,
     'delete',
     'Remove a document route',
-    'Removes all of a document\'s legs in one step. Refused once any leg has been sent.'
+    "Removes all of a document's legs in one step. Refused once any leg has been sent."
   ),
   entry(
     `${P}/orders/{id}/docs/{docId}/route`,
