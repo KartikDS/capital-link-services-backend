@@ -1054,6 +1054,51 @@ export const opsRoutes = (audit: Audit): Router => {
     }
   );
 
+  // A document entered in error is taken off the order, so long as nothing has left
+  // CLS for it: once a leg is out or done the paper trail is the record.
+  router.delete(
+    '/orders/:id/docs/:docId',
+    validate(z.object({ id: idParam, docId: idParam }), 'params'),
+    async (req, res) => {
+      const { id, docId } = validParams<{ id: number; docId: number }>(req);
+      const me = currentUserId(req);
+      const order = await need(id);
+      notClosed(order);
+      needClaimed(order);
+      const doc = docOf(order, docId);
+      if (doc.legs.some((l) => l.status !== 'todo'))
+        throw conflict(
+          'This document has already been sent, so it can no longer be removed. Undo the last sign-off first.'
+        );
+
+      await sequelize.transaction(async (t) => {
+        // Checked again under lock: a leg sent a moment ago is not in the snapshot.
+        const [row] = await sequelize.query<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM tbl_ops_doc_leg WHERE doc_id = :docId AND status <> 'todo' FOR UPDATE`,
+          { type: QueryTypes.SELECT, replacements: { docId }, transaction: t }
+        );
+        if (Number(row?.n ?? 0) > 0)
+          throw conflict('This document has just been sent, so it can no longer be removed.');
+        for (const table of [
+          'tbl_ops_doc_leg',
+          'tbl_ops_doc_check',
+          'tbl_ops_doc_skip',
+          'tbl_ops_pending_item',
+        ]) {
+          await exec(`DELETE FROM ${table} WHERE doc_id = :docId`, { docId }, t);
+        }
+        await exec(
+          `DELETE FROM tbl_order_dl_checklist WHERE id = :docId AND order_no = :id`,
+          { docId, id },
+          t
+        );
+      });
+      await activity(id, 'note', `Document removed: ${doc.qty} × ${doc.type}`, me);
+      await audit(req, 'ops.doc.remove', { orderId: id, docId, type: doc.type });
+      done(res, await orderPayload(id, me));
+    }
+  );
+
   // -------------------------------------------------------------------------
   // Pending items
   // -------------------------------------------------------------------------

@@ -480,6 +480,7 @@ interface OrderRow {
   id: number;
   fn: string | null;
   ln: string | null;
+  client_id: number | null;
   email: string | null;
   assignee: number | null;
   submitted: string | null;
@@ -550,7 +551,8 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
   const archivedClause = hiddenArchived ? ` AND ${hiddenArchived}` : '';
 
   const base = `
-    SELECT o.id, o.contact_first_name AS fn, o.contact_last_name AS ln, o.contact_email AS email,
+    SELECT o.id, o.contact_first_name AS fn, o.contact_last_name AS ln, o.client_id AS client_id,
+           o.contact_email AS email,
            o.visa_cls_team_member AS assignee, o.date_submitted AS submitted,
            o.payment_status AS pay, o.is_address_confirmed AS addr_ok, o.order_type AS otype,
            c.country_name AS dest, c.country_code AS dest_code
@@ -715,6 +717,34 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
         { ids: orderIds }
       ),
     ]);
+
+  // A visa order has no contact name of its own: name it as its own screen does,
+  // by the client's account, then the primary traveller.
+  const unnamed = raw.filter((r) => !clean(r.fn) && !clean(r.ln)).map((r) => r.id);
+  const nameByOrder = new Map<number, string>();
+  if (unnamed.length > 0) {
+    const [primaries, accounts] = await Promise.all([
+      sql<{ order_id: number; first_name: string | null; last_name: string | null }>(
+        `SELECT order_id, first_name, last_name FROM tbl_order_traveller_details
+          WHERE order_id IN (:ids) AND status = 1 ORDER BY is_primary DESC, id`,
+        { ids: unnamed }
+      ),
+      sql<{ order_id: number; fname: string | null; lname: string | null }>(
+        `SELECT o.id AS order_id, u.fname, u.lname
+           FROM tbl_cls_order o JOIN tbl_user_client u ON u.id = o.client_id
+          WHERE o.id IN (:ids)`,
+        { ids: unnamed }
+      ),
+    ]);
+    for (const a of accounts) {
+      const name = `${clean(a.fname) ?? ''} ${clean(a.lname) ?? ''}`.trim();
+      if (name) nameByOrder.set(a.order_id, name);
+    }
+    for (const t of primaries) {
+      const name = `${clean(t.first_name) ?? ''} ${clean(t.last_name) ?? ''}`.trim();
+      if (name && !nameByOrder.has(t.order_id)) nameByOrder.set(t.order_id, name);
+    }
+  }
 
   const skipped = new Set(skips.map((k) => k.doc_id));
   const addressByOrder = new Map<number, ReturnAddressView>();
@@ -896,7 +926,10 @@ const loadOrdersFresh = async (opts: SnapshotOptions = {}): Promise<OrderOps[]> 
 
     const order: OrderOps = {
       id: r.id,
-      client: `${clean(r.fn) ?? ''} ${clean(r.ln) ?? ''}`.trim() || `Order ${r.id}`,
+      client:
+        `${clean(r.fn) ?? ''} ${clean(r.ln) ?? ''}`.trim() ||
+        nameByOrder.get(r.id) ||
+        `Order ${r.id}`,
       company: clean(r.company),
       email: clean(r.email),
       destination: clean(r.dest),

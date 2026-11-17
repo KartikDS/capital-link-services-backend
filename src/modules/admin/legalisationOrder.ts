@@ -106,12 +106,13 @@ export type LegalisationAudit = (
  *
  * Kept as data keyed by region so the NZ port swaps one constant rather than
  * editing logic. AU's list is the one in the legacy `docLegalisation.html.twig`
- * (Notary, Chamber, DFAT, CMO, AFP, Embassy), in the twig's own order. NZ has a
+ * (Notary, Chamber, DFAT, CMO, AFP, Embassy), in the twig's own order, plus QVP,
+ * SVP, Medical Clinic and Translator added at the client's request. NZ has a
  * different list (and a leading "Translator" on the add-new-row form only) and is
  * ported separately — it is deliberately not guessed here.
  */
 export const LEGALISATION_LOCATIONS = {
-  AU: ['Notary', 'Chamber', 'DFAT', 'CMO', 'AFP', 'Embassy'],
+  AU: ['Notary', 'Chamber', 'DFAT', 'CMO', 'AFP', 'Embassy', 'QVP', 'SVP', 'Medical Clinic', 'Translator'],
 } as const;
 
 /** The region this backend serves. The NZ repo changes this and the table above. */

@@ -130,11 +130,18 @@ const readDashboardMetrics = async () => {
         ...visible,
       },
     }),
-    // Received today, not "never handled": the admin cannot mark an enquiry as
-    // dealt with, so a status count only ever grows — it read 142, six weeks of
-    // enquiries, and meant nothing. Today's count starts at zero each morning.
+    // Received in today's 5pm-to-5pm window, not "never handled": the admin
+    // cannot mark an enquiry as dealt with, so a status count only ever grows —
+    // it read 142, six weeks of enquiries, and meant nothing. The window runs
+    // from yesterday 5pm to today 5pm, so after-hours enquiries show up the next
+    // morning instead of the count reading 0 while they wait.
     Inquiries.count({
-      where: { created: { [Op.gte]: `${toLegacyDateTime().slice(0, 10)} 00:00:00` } },
+      where: {
+        created: {
+          [Op.gte]: `${toLegacyDateTime(new Date(Date.now() - 24 * 60 * 60 * 1000)).slice(0, 10)} 17:00:00`,
+          [Op.lt]: `${toLegacyDateTime().slice(0, 10)} 17:00:00`,
+        },
+      },
     }),
     UserClient.count({ where: { s_enabled: ENABLED } }),
     ClsOrderDocuments.count({ where: { status: DOCUMENT_STATUS.UPLOADED } }),

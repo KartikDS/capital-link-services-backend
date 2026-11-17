@@ -790,7 +790,7 @@ describe('GET /legalisation', () => {
       strokes: [{ lx: 1, ly: 2, mx: 3, my: 4 }],
     });
     expect(screen.ticket.followUpDate).toBe('2026-10-20');
-    expect(screen.locations).toEqual(['Notary', 'Chamber', 'DFAT', 'CMO', 'AFP', 'Embassy']);
+    expect(screen.locations).toEqual(['Notary', 'Chamber', 'DFAT', 'CMO', 'AFP', 'Embassy', 'QVP', 'SVP', 'Medical Clinic', 'Translator']);
     expect(screen.delivery).toMatchObject({ hasAddress: true, city: 'Sydney' });
     expect(screen.payment).toEqual({ status: 1, billing: null });
     expect(screen.details).toMatchObject({ typeOfDocument: 2, nationalityId: 6 });
